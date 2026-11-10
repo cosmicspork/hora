@@ -1,0 +1,4 @@
+/target/
+/spa/node_modules/
+/spa/dist/
+.DS_Store
