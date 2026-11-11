@@ -1,0 +1,11 @@
+# Socket activation: hora starts the first time its port is opened.
+# Install both units into ~/.config/systemd/user/, then:
+#   systemctl --user enable --now hora.socket
+[Unit]
+Description=hora (socket)
+
+[Socket]
+ListenStream=127.0.0.1:4530
+
+[Install]
+WantedBy=sockets.target
