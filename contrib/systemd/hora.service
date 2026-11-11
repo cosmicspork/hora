@@ -1,0 +1,10 @@
+[Unit]
+Description=hora: local time tracking
+Requires=hora.socket
+After=hora.socket
+
+[Service]
+# hora takes the listening socket from systemd (LISTEN_FDS) and binds
+# --port itself only when started by hand.
+ExecStart=%h/.cargo/bin/hora serve
+Restart=on-failure
