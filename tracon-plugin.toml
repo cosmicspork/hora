@@ -9,7 +9,7 @@
 # consequential. Operator-only operations (confirming, deciding proposals,
 # projects) are not tools.
 name = "hora"
-version = "0.1.0"
+version = "0.2.0"
 contract = 1
 exec = ["bin/hora", "serve"]
 
