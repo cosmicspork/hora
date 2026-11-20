@@ -2,7 +2,7 @@
 
 Local time tracking for client hours. Agents propose entries; you confirm them. Every change records who made it.
 
-hora is one binary: a SQLite store, a web UI for you, and a CLI and HTTP API for agents. It listens on loopback only and keeps no credentials. It is built to become a [Tracon](https://github.com/cosmicspork/tracon) plugin later; until then it runs on its own.
+hora is one binary: a SQLite store, a web UI for you, and a CLI and HTTP API for agents. It listens on loopback only and keeps no credentials. It runs on its own, or as a [Tracon](https://github.com/cosmicspork/tracon) plugin (see [As a Tracon plugin](#as-a-tracon-plugin)).
 
 ## Install and run
 
@@ -68,7 +68,43 @@ What agents can and can't do:
 
 ## What the gate is, and isn't
 
-hora keeps a cooperative agent accountable: its work arrives as drafts or proposals, and every change is recorded with its author. A change made by accepting a proposal is recorded as yours, with the proposing agent beside it. It does not stop a hostile one. An agent running as you can open the database, or send a request that claims to come from the web UI. The author recorded for agent changes is the name the agent gives. In the Tracon plugin, Tracon attests the caller instead.
+hora keeps a cooperative agent accountable: its work arrives as drafts or proposals, and every change is recorded with its author. A change made by accepting a proposal is recorded as yours, with the proposing agent beside it. It does not stop a hostile one. An agent running as you can open the database, or send a request that claims to come from the web UI. The author recorded for agent changes is the name the agent gives. As a Tracon plugin, the node attests the caller of each tool call instead.
+
+## As a Tracon plugin
+
+hora also runs as a Tracon plugin with a UI. Once a release exists:
+
+```sh
+tracon plugin add cosmicspork/hora
+```
+
+The node starts `hora serve --socket <path> --data <dir>` for each channel, serves hora's page itself in its **Plugins** section, and forwards the page's requests to hora, each with a context the node signs for you. hora serves its operator API only to requests carrying a valid one, in place of the Origin check the standalone server makes.
+
+Agents get hora's operations as MCP tools: every operation except the operator-only ones (`time_confirm`, `proposal_accept`, `proposal_reject`, `project_create`, `project_update`). The node signs who made each call, and hora records the harness it names as the author (`agent:<harness id>`, such as `agent:external` for a harness you run yourself through the node's external door), not a name the agent picked. The same rules apply: an agent's entry is a draft until you confirm it, and a change to a confirmed entry is a proposal. Since hora is where you review an agent's time, the node's `[[plugin]]` entry can allow the tools without asking:
+
+```toml
+[[plugin]]
+name = "hora"
+allow = ["time_*"]
+```
+
+The node starts hora with an empty environment, so it is configured by an optional `<data>/plugin.toml`:
+
+```toml
+# The directory holding hora.sqlite3. Default: the data directory itself. Use
+# an absolute path (there is no HOME to expand ~); a relative one is from the
+# data directory.
+data_dir = "/home/you/.local/share/hora"
+# Serve the agent API on this address, for the hora CLI. 127.0.0.1 only.
+# Default: off, so agents reach this instance only through its tools.
+agent_listen = "127.0.0.1:4530"
+```
+
+Pointing `data_dir` at the standalone database keeps your entries in place. Stop the standalone server first (`systemctl --user disable --now hora.socket hora.service`): `agent_listen` on 4530 would collide with it, and two servers shouldn't share one database. With `agent_listen` set, the CLI keeps working as before (`HORA_URL` if the port isn't 4530), with the same agent checks as standalone; that port serves nothing else. The plugin socket refuses `/api/agent/*`, since every request on it is yours.
+
+`agent_listen` is open only while the node runs hora. The node starts a plugin when it is first needed (its page is opened or a tool is called) and stops it after the `[[plugin]]` entry's `idle_timeout_secs` without use (900 by default), so a CLI call can find nothing listening, after a node restart say. Raise `idle_timeout_secs` to keep hora up once started, or have agents use the tools.
+
+Dates and naive times are read in the host's local time zone, as standalone.
 
 ## Data
 
@@ -103,7 +139,7 @@ bun run --cwd spa check
 bun test --cwd spa
 ```
 
-`bun run --cwd spa dev` serves the UI with hot reload and proxies `/api` to a hora on port 4530. Operations live in `src/ops.rs`, every rule about who may change what in `src/store.rs`, and the one place the caller is decided in `actor_for` in `src/http.rs`.
+`bun run --cwd spa dev` serves the UI with hot reload and proxies `/api` to a hora on port 4530. Operations live in `src/ops.rs`, every rule about who may change what in `src/store.rs`, and where the caller is decided in `actor_for` in `src/http.rs` (HTTP) and `Caller::actor` in `src/contract.rs` (plugin tool calls). Plugin mode is in `src/plugin.rs` and the signed-context check in `src/contract.rs`; `tests/plugin.rs` runs the built binary as a node would, and `tests/package.rs` runs the release archive's layout behind a stand-in for the node's proxy. The SPA uses only relative URLs, since the node serves it under a path prefix.
 
 ## License
 

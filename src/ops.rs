@@ -1,7 +1,7 @@
 //! The operation registry: every action hora offers, named and described once,
 //! with its JSON input schema. The agent API and the CLI are thin layers over
-//! it, the web UI calls it as the operator, and in wave 2 it becomes the Tracon
-//! plugin manifest's tool list.
+//! it, the web UI calls it as the operator, and as a Tracon plugin the ones an
+//! agent may run are its MCP tools (`plugin::tools`).
 
 use schemars::{JsonSchema, Schema, schema_for};
 use serde::Serialize;

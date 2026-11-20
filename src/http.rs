@@ -24,6 +24,8 @@ use crate::store::{Store, StoreError};
 /// cross-origin without a preflight hora never answers.
 pub const AGENT_HEADER: &str = "x-hora-agent";
 const AGENT_PREFIX: &str = "/api/agent";
+/// The largest JSON body a handler reads.
+pub(crate) const BODY_LIMIT: usize = 64 * 1024;
 
 #[derive(Clone)]
 pub struct App {
@@ -35,54 +37,71 @@ pub struct App {
 #[folder = "spa/dist"]
 struct Assets;
 
-fn error(status: StatusCode, code: &str, message: &str) -> Response {
+pub(crate) fn error(status: StatusCode, code: &str, message: &str) -> Response {
     (status, Json(json!({"error": code, "message": message}))).into_response()
 }
 
-fn op_error(err: OpError) -> Response {
+fn body(code: &str, message: &str) -> Value {
+    json!({"error": code, "message": message})
+}
+
+fn with_id(code: &str, message: &str, id: String) -> Value {
+    json!({"error": code, "message": message, "id": id})
+}
+
+/// An operation's failure as its HTTP status and JSON body. The MCP tools
+/// answer with the same body.
+pub(crate) fn op_error_body(err: OpError) -> (StatusCode, Value) {
     match err {
-        OpError::Unknown(_) => error(StatusCode::NOT_FOUND, "unknown_operation", &err.to_string()),
-        OpError::BadInput(message) => error(StatusCode::BAD_REQUEST, "invalid_request", &message),
-        OpError::Store(err) => store_error(err),
+        OpError::Unknown(_) => (
+            StatusCode::NOT_FOUND,
+            body("unknown_operation", &err.to_string()),
+        ),
+        OpError::BadInput(message) => (StatusCode::BAD_REQUEST, body("invalid_request", &message)),
+        OpError::Store(err) => store_error_body(err),
     }
 }
 
-fn store_error(err: StoreError) -> Response {
+fn store_error_body(err: StoreError) -> (StatusCode, Value) {
     let message = err.to_string();
     match err {
-        StoreError::Invalid(_) => error(StatusCode::BAD_REQUEST, "invalid_request", &message),
-        StoreError::NotFound => error(StatusCode::NOT_FOUND, "not_found", "Not found."),
-        StoreError::Conflict => error(
+        StoreError::Invalid(_) => (StatusCode::BAD_REQUEST, body("invalid_request", &message)),
+        StoreError::NotFound => (StatusCode::NOT_FOUND, body("not_found", "Not found.")),
+        StoreError::Conflict => (
             StatusCode::CONFLICT,
-            "version_conflict",
-            "This changed since it was read. Reload it before saving.",
+            body(
+                "version_conflict",
+                "This changed since it was read. Reload it before saving.",
+            ),
         ),
-        StoreError::Forbidden(_) => error(StatusCode::FORBIDDEN, "forbidden", &message),
-        StoreError::Duplicate(id) => (
-            StatusCode::CONFLICT,
-            Json(json!({"error": "duplicate", "message": message, "id": id})),
-        )
-            .into_response(),
-        StoreError::Stale(_) => error(StatusCode::CONFLICT, "stale_proposal", &message),
+        StoreError::Forbidden(_) => (StatusCode::FORBIDDEN, body("forbidden", &message)),
+        StoreError::Duplicate(id) => (StatusCode::CONFLICT, with_id("duplicate", &message, id)),
+        StoreError::Stale(_) => (StatusCode::CONFLICT, body("stale_proposal", &message)),
         StoreError::PendingProposal(id) => (
             StatusCode::CONFLICT,
-            Json(json!({"error": "pending_proposal", "message": message, "id": id})),
-        )
-            .into_response(),
-        StoreError::TimerRunning(id) => (
-            StatusCode::CONFLICT,
-            Json(json!({"error": "timer_running", "message": message, "id": id})),
-        )
-            .into_response(),
+            with_id("pending_proposal", &message, id),
+        ),
+        StoreError::TimerRunning(id) => {
+            (StatusCode::CONFLICT, with_id("timer_running", &message, id))
+        }
         StoreError::Internal(detail) => {
             eprintln!("hora: internal error: {detail}");
-            error(
+            (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                "internal_error",
-                "Local data is unavailable.",
+                body("internal_error", "Local data is unavailable."),
             )
         }
     }
+}
+
+fn op_error(err: OpError) -> Response {
+    let (status, body) = op_error_body(err);
+    (status, Json(body)).into_response()
+}
+
+fn store_error(err: StoreError) -> Response {
+    let (status, body) = store_error_body(err);
+    (status, Json(body)).into_response()
 }
 
 async fn blocking<T: Send + 'static>(
@@ -97,9 +116,12 @@ async fn blocking<T: Send + 'static>(
     })
 }
 
-/// The one place hora decides who is calling. Operator routes are reachable
-/// only from the page's own origin (enforced by `guard`); agent routes name
-/// their agent in a header. Wave 2 replaces this with Tracon's signed caller.
+/// The one place hora's HTTP API decides who is calling. Operator routes are
+/// reachable only from the page's own origin (enforced by `guard`), or, as a
+/// Tracon plugin, only with the node's signed context for the operator
+/// (`plugin::guard`); agent routes name their agent in a header. An MCP tool
+/// call takes its caller from the node's signed context instead
+/// (`contract::Caller::actor`).
 fn actor_for(path: &str, headers: &HeaderMap) -> Result<Actor, Response> {
     if !is_agent_path(path) {
         return Ok(Actor::Operator);
@@ -127,7 +149,7 @@ pub fn valid_agent_name(name: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
 }
 
-fn is_agent_path(path: &str) -> bool {
+pub(crate) fn is_agent_path(path: &str) -> bool {
     path == AGENT_PREFIX || path.starts_with("/api/agent/")
 }
 
@@ -312,7 +334,7 @@ async fn fallback(uri: Uri) -> Response {
     }
 }
 
-fn json_content(request: &Request) -> bool {
+pub(crate) fn json_content(request: &Request) -> bool {
     request
         .headers()
         .get(header::CONTENT_TYPE)
@@ -389,18 +411,49 @@ async fn guard(State(app): State<App>, request: Request, next: Next) -> Response
     response
 }
 
-pub fn router(app: App) -> Router {
+/// The operator's API: the routes hora's page uses. Every change made here is
+/// the operator's, so whatever serves it must first establish that the
+/// request is the operator's (the page's own origin standalone, the node's
+/// signed context as a plugin).
+pub fn operator_api() -> Router<App> {
     Router::new()
         .route("/api/state", get(state))
         .route("/api/ops", get(list_ops))
         .route("/api/ops/{name}", post(call))
         .route("/api/export", get(export))
+}
+
+/// The agent API, for the hora CLI: the agent names itself in a header.
+fn agent_api() -> Router<App> {
+    Router::new()
         .route("/api/agent/ops", get(list_ops))
         .route("/api/agent/ops/{name}", post(call))
+}
+
+/// A JSON 404 for any path a router does not serve.
+pub(crate) async fn not_found() -> Response {
+    error(StatusCode::NOT_FOUND, "not_found", "Not found.")
+}
+
+/// Standalone `hora serve`: the page, the operator's API and the agent API on
+/// one loopback port.
+pub fn router(app: App) -> Router {
+    operator_api()
+        .merge(agent_api())
         .fallback(fallback)
         .route("/", get(asset))
         .route("/assets/{*path}", get(asset))
-        .layer(DefaultBodyLimit::max(64 * 1024))
+        .layer(DefaultBodyLimit::max(BODY_LIMIT))
+        .layer(middleware::from_fn_with_state(app.clone(), guard))
+        .with_state(app)
+}
+
+/// Only the agent API, with the same checks as standalone, for plugin mode's
+/// `agent_listen`: neither the operator's routes nor the page are on it.
+pub fn agent_router(app: App) -> Router {
+    agent_api()
+        .fallback(not_found)
+        .layer(DefaultBodyLimit::max(BODY_LIMIT))
         .layer(middleware::from_fn_with_state(app.clone(), guard))
         .with_state(app)
 }

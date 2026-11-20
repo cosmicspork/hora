@@ -40,11 +40,20 @@ struct Cli {
 #[derive(Subcommand)]
 enum Command {
     /// Run the server and web UI.
+    ///
+    /// With --socket, serve as a Tracon plugin instead: the node starts it,
+    /// serves the page itself, and configures it through <data>/plugin.toml.
     Serve {
         #[arg(long, default_value_t = 4530)]
         port: u16,
         #[arg(long, env = "HORA_DATA_DIR")]
         data_dir: Option<PathBuf>,
+        /// Tracon plugin mode: the Unix socket the node names.
+        #[arg(long, requires = "data", conflicts_with_all = ["port", "data_dir"])]
+        socket: Option<PathBuf>,
+        /// Tracon plugin mode: this instance's data directory.
+        #[arg(long, requires = "socket")]
+        data: Option<PathBuf>,
     },
     /// List the operations with their input schemas.
     Ops,
@@ -302,8 +311,17 @@ async fn main() {
 
 async fn run() -> Result<()> {
     let cli = Cli::parse();
-    if let Command::Serve { port, data_dir } = cli.command {
-        return serve(port, data_dir).await;
+    if let Command::Serve {
+        port,
+        data_dir,
+        socket,
+        data,
+    } = cli.command
+    {
+        return match (socket, data) {
+            (Some(socket), Some(data)) => hora::plugin::serve(&socket, &data).await,
+            _ => serve(port, data_dir).await,
+        };
     }
     let client = Client::new(server_url(&cli.server)?, cli.agent)?;
     let (op, args) = match cli.command {

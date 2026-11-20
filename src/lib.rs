@@ -1,7 +1,9 @@
 pub mod client;
+pub mod contract;
 pub mod http;
 pub mod kritee;
 pub mod model;
 pub mod ops;
+pub mod plugin;
 pub mod store;
 pub mod time;
