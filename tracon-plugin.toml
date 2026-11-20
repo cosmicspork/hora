@@ -1,0 +1,74 @@
+# hora as a Tracon plugin (contract 1). The node serves the page from ui/ and
+# forwards its api/ requests to `hora serve --socket <path> --data <dir>`,
+# signed as the operator's. hora takes no credentials and reaches no network.
+#
+# The tools are the operations an agent may run, and hora records the harness
+# the node names as their author. An agent's entry is a draft until the
+# operator confirms it in hora's page, and its change to a confirmed entry is
+# a proposal the operator accepts or rejects there, so none of the writes is
+# consequential. Operator-only operations (confirming, deciding proposals,
+# projects) are not tools.
+name = "hora"
+version = "0.1.0"
+contract = 1
+exec = ["bin/hora", "serve"]
+
+[[tool]]
+name = "time_projects"
+hint = "read"
+
+[[tool]]
+name = "time_list"
+hint = "read"
+
+[[tool]]
+name = "time_show"
+hint = "read"
+
+[[tool]]
+name = "time_history"
+hint = "read"
+
+[[tool]]
+name = "time_status"
+hint = "read"
+
+[[tool]]
+name = "time_summary"
+hint = "read"
+
+[[tool]]
+name = "time_log"
+hint = "write"
+
+[[tool]]
+name = "time_edit"
+hint = "write"
+
+[[tool]]
+name = "time_delete"
+hint = "write"
+
+[[tool]]
+name = "time_start"
+hint = "write"
+
+[[tool]]
+name = "time_stop"
+hint = "write"
+
+[[tool]]
+name = "time_propose"
+hint = "write"
+
+[[tool]]
+name = "time_proposals"
+hint = "read"
+
+[[tool]]
+name = "time_withdraw"
+hint = "write"
+
+[ui]
+entry = "ui/index.html"
+title = "hora"

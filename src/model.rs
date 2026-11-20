@@ -5,8 +5,9 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-/// Who is making a change. Decided only by the HTTP layer (`http::actor_for`),
-/// so wave 2 can substitute Tracon's signed caller context in one place.
+/// Who is making a change. Decided by the HTTP layer (`http::actor_for`), or,
+/// for a Tracon plugin tool call, by the node's signed caller context
+/// (`contract::Caller::actor`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Actor {
     Operator,

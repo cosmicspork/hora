@@ -59,7 +59,7 @@
 </script>
 
 <header class="top">
-  <a class="brand" href="#week"><img src="/hora.svg" alt="" width="22" height="22" /> hora</a>
+  <a class="brand" href="#week"><img src="./hora.svg" alt="" width="22" height="22" /> hora</a>
   <nav>
     <a href="#week" class:active={view === 'week'}>Week</a>
     <a href="#drafts" class:active={view === 'drafts'}>Drafts{#if app && app.drafts + app.proposals}<span class="count" title="{app.drafts} drafts, {app.proposals} proposed changes">{app.drafts + app.proposals}</span>{/if}</a>

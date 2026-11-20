@@ -134,11 +134,11 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
 }
 
 function op<T>(name: string, args: object = {}): Promise<T> {
-  return request<T>(`/api/ops/${name}`, { method: 'POST', body: JSON.stringify(args) });
+  return request<T>(`api/ops/${name}`, { method: 'POST', body: JSON.stringify(args) });
 }
 
 export const api = {
-  state: () => request<AppState>('/api/state'),
+  state: () => request<AppState>('api/state'),
   list: (args: { from?: string; to?: string; project?: string; state?: EntryState }) => op<Entry[]>('time_list', args),
   history: (id: string) => op<Revision[]>('time_history', { id }),
   summary: (args: { from: string; to: string; project?: string; by: Grouping }) => op<Summary>('time_summary', args),
@@ -160,5 +160,5 @@ export const api = {
 export function exportUrl(format: 'csv' | 'jsonl', from: string, to: string, project?: string): string {
   const params = new URLSearchParams({ format, from, to });
   if (project) params.set('project', project);
-  return `/api/export?${params}`;
+  return `api/export?${params}`;
 }
