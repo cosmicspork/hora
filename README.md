@@ -141,6 +141,8 @@ bun test --cwd spa
 
 `bun run --cwd spa dev` serves the UI with hot reload and proxies `/api` to a hora on port 4530. Operations live in `src/ops.rs`, every rule about who may change what in `src/store.rs`, and where the caller is decided in `actor_for` in `src/http.rs` (HTTP) and `Caller::actor` in `src/contract.rs` (plugin tool calls). Plugin mode is in `src/plugin.rs` and the signed-context check in `src/contract.rs`; `tests/plugin.rs` runs the built binary as a node would, and `tests/package.rs` runs the release archive's layout behind a stand-in for the node's proxy. The SPA uses only relative URLs, since the node serves it under a path prefix.
 
+Releases are cut by release-please from conventional-commit PR titles. Merging its release PR tags `v<version>`, and `release.yml` attaches `hora-<version>-<target>.tar.gz` (the manifest, `bin/hora` and `ui/`) for each target with `checksums.txt`.
+
 ## License
 
 [MIT](LICENSE)
