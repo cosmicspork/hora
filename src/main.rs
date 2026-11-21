@@ -122,6 +122,19 @@ enum Command {
     },
     /// Show the running timer.
     Status,
+    /// Today's date and offset, projects, the running timer, and what waits on the operator.
+    Overview,
+    /// Print entries as CSV or JSONL, for a file.
+    Export {
+        #[arg(long)]
+        from: Option<String>,
+        #[arg(long)]
+        to: Option<String>,
+        #[arg(long)]
+        project: Option<String>,
+        #[arg(long, value_enum, default_value = "csv")]
+        format: FormatArg,
+    },
     /// Minutes by period and project.
     Summary {
         #[arg(long)]
@@ -232,6 +245,12 @@ enum ProposalStateArg {
 enum StateArg {
     Draft,
     Confirmed,
+}
+
+#[derive(Clone, Copy, ValueEnum)]
+enum FormatArg {
+    Csv,
+    Jsonl,
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -446,6 +465,32 @@ async fn run() -> Result<()> {
             ]),
         ),
         Command::Status => ("time_status".into(), json!({})),
+        Command::Overview => ("time_overview".into(), json!({})),
+        Command::Export {
+            from,
+            to,
+            project,
+            format,
+        } => {
+            let args = object(vec![
+                ("from", some(from)),
+                ("to", some(to)),
+                ("project", some(project)),
+                (
+                    "format",
+                    Some(
+                        match format {
+                            FormatArg::Csv => "csv",
+                            FormatArg::Jsonl => "jsonl",
+                        }
+                        .into(),
+                    ),
+                ),
+            ]);
+            let export = client.call("time_export", args).await?;
+            print!("{}", export["content"].as_str().unwrap_or_default());
+            return Ok(());
+        }
         Command::Summary {
             from,
             to,

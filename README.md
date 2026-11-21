@@ -52,6 +52,8 @@ hora propose <id> --version 2 -m "Login fixes" --ref pr:acme-web#157 \
   --reason "Matches the session log"
 hora proposals --state pending
 hora withdraw <proposal-id>
+hora overview      # today's date and offset, projects, timer, what waits on you
+hora export --from 2026-11-01 --to 2026-11-30 > november.csv
 ```
 
 What agents can and can't do:
@@ -65,6 +67,20 @@ What agents can and can't do:
 - An `--import-key` makes logging idempotent: a second entry with the same key is refused as a duplicate, so a backfill can be re-run.
 
 `hora ops` lists every operation with its JSON input schema, and `hora call <op> '<json>'` (or `-` for stdin) runs any of them. Over HTTP, `POST /api/agent/ops/<op>` with an `X-Hora-Agent` header and a JSON body does the same; `GET /api/agent/ops` lists them. The agent API refuses any request carrying an `Origin` header, so a web page can't call it.
+
+### Operations, routes and tools
+
+Every action is one operation in `src/ops.rs`. The HTTP API, the CLI, the web UI and the Tracon tools are all built from that list, so they offer the same things:
+
+| Operation | Tool | HTTP |
+|---|---|---|
+| `time_overview` | yes | `POST /api/ops/time_overview`, and `GET /api/state` for the page |
+| `time_projects`, `time_list`, `time_show`, `time_history`, `time_status`, `time_summary`, `time_proposals` | yes (read) | `POST /api/ops/<op>` |
+| `time_export` | yes (read) | `POST /api/ops/time_export`, and `GET /api/export?format=&from=&to=&project=` as a download |
+| `time_log`, `time_edit`, `time_delete`, `time_start`, `time_stop`, `time_propose`, `time_withdraw` | yes (write) | `POST /api/ops/<op>` |
+| `time_confirm`, `proposal_accept`, `proposal_reject`, `project_create`, `project_update` | no: operator only | `POST /api/ops/<op>`; refused on the agent API |
+
+Each `POST /api/ops/<op>` is also `POST /api/agent/ops/<op>` on the agent API. `GET /api/ops` and `GET /api/agent/ops` list the operations, as `tools/list` lists the tools. `tests/parity.rs` fails if a route is added outside the route table in `src/http.rs`, if a route's operation is not a tool, if an operation is not a tool without a stated reason, or if the page or the CLI calls something that doesn't exist.
 
 ## What the gate is, and isn't
 
@@ -80,7 +96,7 @@ tracon plugin add cosmicspork/hora
 
 The node starts `hora serve --socket <path> --data <dir>` for each channel, serves hora's page itself in its **Plugins** section, and forwards the page's requests to hora, each with a context the node signs for you. hora serves its operator API only to requests carrying a valid one, in place of the Origin check the standalone server makes.
 
-Agents get hora's operations as MCP tools: every operation except the operator-only ones (`time_confirm`, `proposal_accept`, `proposal_reject`, `project_create`, `project_update`). The node signs who made each call, and hora records the harness it names as the author (`agent:<harness id>`, such as `agent:external` for a harness you run yourself through the node's external door), not a name the agent picked. The same rules apply: an agent's entry is a draft until you confirm it, and a change to a confirmed entry is a proposal. Since hora is where you review an agent's time, the node's `[[plugin]]` entry can allow the tools without asking:
+Agents get hora's operations as MCP tools, named `hora__<op>` on the node: every operation in the table above except the operator-only ones (`time_confirm`, `proposal_accept`, `proposal_reject`, `project_create`, `project_update`), which stay in hora's page because they are your decisions about agents' work. The node signs who made each call, and hora records the harness it names as the author (`agent:<harness id>`, such as `agent:external` for a harness you run yourself through the node's external door), not a name the agent picked. The same rules apply: an agent's entry is a draft until you confirm it, and a change to a confirmed entry is a proposal. Since hora is where you review an agent's time, the node's `[[plugin]]` entry can allow the tools without asking:
 
 ```toml
 [[plugin]]

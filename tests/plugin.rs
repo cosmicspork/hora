@@ -440,3 +440,31 @@ async fn plugin_mode_needs_the_contract_environment_and_refuses_a_non_socket() {
     assert!(started.elapsed() < Duration::from_secs(10));
     assert_eq!(std::fs::read_to_string(&socket).unwrap(), "not a socket");
 }
+
+#[tokio::test]
+async fn the_overview_and_export_tools_answer_as_their_routes_do() {
+    let plugin = Plugin::start(|_| {}).await;
+    plugin.add_project("acme").await;
+    plugin.call_ok("time_log", minutes(45), "claude").await;
+
+    let overview = plugin.call_ok("time_overview", json!({}), "claude").await;
+    let (status, state) = plugin.operator("GET", "/api/state", &Value::Null).await;
+    assert_eq!(status, 200, "{state}");
+    assert_eq!(overview, state);
+    assert_eq!(overview["drafts"], 1);
+    assert_eq!(overview["projects"][0]["slug"], "acme");
+    assert!(overview["today"].is_string() && overview["utc_offset"].is_string());
+
+    let export = plugin
+        .call_ok(
+            "time_export",
+            json!({"format": "jsonl", "from": "2026-11-01", "to": "2026-11-30"}),
+            "claude",
+        )
+        .await;
+    assert_eq!(export["filename"], "hora-2026-11-02-2026-11-02.jsonl");
+    assert_eq!(export["entries"], 1);
+    let line: Value = serde_json::from_str(export["content"].as_str().unwrap().trim_end()).unwrap();
+    assert_eq!(line["author"], "agent:claude");
+    assert!(line.get("warnings").is_none());
+}
