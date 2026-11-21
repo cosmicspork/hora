@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.0](https://github.com/cosmicspork/hora/compare/v0.2.0...v0.3.0) (2026-11-21)
+
+
+### Features
+
+* agent tools match the HTTP API, with a parity test ([#6](https://github.com/cosmicspork/hora/issues/6)) ([a32e47b](https://github.com/cosmicspork/hora/commit/a32e47b12c50981d6a77271974fbfc551ffc3763))
+
 ## [0.2.0](https://github.com/cosmicspork/hora/compare/v0.1.0...v0.2.0) (2026-11-20)
 
 
