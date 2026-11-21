@@ -10,7 +10,7 @@
 # projects) are not tools. tests/package.rs holds this list to tools/list, and
 # tests/parity.rs holds the tools to the HTTP API.
 name = "hora"
-version = "0.2.0"
+version = "0.3.0"
 contract = 1
 exec = ["bin/hora", "serve"]
 
