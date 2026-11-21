@@ -38,7 +38,7 @@
       {#if entry.started_at}{clock(entry.started_at)}{entry.ended_at ? `–${clock(entry.ended_at)}` : ''}{/if}
       · {entry.minutes ? formatMinutes(entry.minutes) : 'running'} · {entry.description}
     </button>
-    <span class="badge draft" title="Proposed by {proposal.author}">{deleting ? 'delete' : 'change'} · {who(proposal.author)}</span>
+    <span class="badge draft" title="Proposed by {proposal.author}{proposal.session ? ` in Tracon session ${proposal.session}` : ''}">{deleting ? 'delete' : 'change'} · {who(proposal.author)}</span>
   </header>
 
   {#if deleting}

@@ -34,6 +34,25 @@ impl Actor {
     }
 }
 
+/// Who is making a change, and the Tracon session it came from. The session
+/// is set only on a plugin call whose node-signed context names one; it is
+/// recorded beside the author, never folded into it. Standalone and
+/// agent-API writes have none.
+#[derive(Clone, Copy, Debug)]
+pub struct Writer<'a> {
+    pub actor: &'a Actor,
+    pub session: Option<&'a str>,
+}
+
+impl<'a> From<&'a Actor> for Writer<'a> {
+    fn from(actor: &'a Actor) -> Self {
+        Self {
+            actor,
+            session: None,
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum EntryState {
@@ -93,6 +112,10 @@ pub struct Entry {
     pub billable: bool,
     pub state: EntryState,
     pub author: String,
+    /// The Tracon session that created the entry, when it came through the
+    /// plugin with one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session: Option<String>,
     pub refs: Vec<String>,
     pub import_key: Option<String>,
     pub deleted: bool,
@@ -128,6 +151,13 @@ pub struct Revision {
     pub proposal_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub proposed_by: Option<String>,
+    /// The Tracon session that made the change, when it came through the
+    /// plugin with one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session: Option<String>,
+    /// For an accepted proposal, the Tracon session that proposed it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub proposed_session: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, JsonSchema)]
@@ -173,10 +203,16 @@ pub struct Proposal {
     pub changes: serde_json::Value,
     pub reason: String,
     pub author: String,
+    /// The Tracon session that proposed it, when it came through the plugin.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session: Option<String>,
     pub state: ProposalState,
     /// The operator's note on accepting or rejecting.
     pub note: Option<String>,
     pub decided_by: Option<String>,
+    /// The Tracon session that accepted, rejected or withdrew it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub decided_session: Option<String>,
     pub created_at: String,
     pub decided_at: Option<String>,
     /// Pending, but the entry changed since, so it can't be accepted.

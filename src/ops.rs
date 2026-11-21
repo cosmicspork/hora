@@ -10,9 +10,9 @@ use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 
 use crate::model::{
-    Actor, ConfirmEntries, CreateProject, DecideProposal, DeleteEntry, EditEntry, Empty, Entry,
-    Export, ExportFormat, ExportQuery, ListEntries, ListProposals, LogEntry, ProposeChange,
-    ShowEntry, StartTimer, StopTimer, SummaryQuery, UpdateProject, WithdrawProposal,
+    ConfirmEntries, CreateProject, DecideProposal, DeleteEntry, EditEntry, Empty, Entry, Export,
+    ExportFormat, ExportQuery, ListEntries, ListProposals, LogEntry, ProposeChange, ShowEntry,
+    StartTimer, StopTimer, SummaryQuery, UpdateProject, WithdrawProposal, Writer,
 };
 use crate::store::{Store, StoreError};
 
@@ -246,8 +246,16 @@ fn out<T: Serialize>(value: T) -> Result<Value, OpError> {
     serde_json::to_value(value).map_err(|e| OpError::Store(StoreError::Internal(e.to_string())))
 }
 
-/// Runs an operation as `actor`. The store enforces who may do what.
-pub fn dispatch(store: &Store, actor: &Actor, name: &str, args: Value) -> Result<Value, OpError> {
+/// Runs an operation as `by`: its actor, and the Tracon session recorded on
+/// what it writes. The store enforces who may do what.
+pub fn dispatch<'a>(
+    store: &Store,
+    by: impl Into<Writer<'a>>,
+    name: &str,
+    args: Value,
+) -> Result<Value, OpError> {
+    let by = by.into();
+    let actor = by.actor;
     let op = find(name).ok_or_else(|| OpError::Unknown(name.to_string()))?;
     if op.operator_only && !actor.is_operator() {
         return Err(OpError::Store(StoreError::Forbidden(format!(
@@ -272,17 +280,17 @@ pub fn dispatch(store: &Store, actor: &Actor, name: &str, args: Value) -> Result
         }
         "time_summary" => out(store.summary(&input::<SummaryQuery>(args)?)?),
         "time_export" => out(export(store, input(args)?)?),
-        "time_log" => out(store.log(actor, input(args)?)?),
-        "time_edit" => out(store.edit(actor, input(args)?)?),
-        "time_delete" => out(store.delete(actor, input(args)?)?),
-        "time_start" => out(store.start(actor, input(args)?)?),
-        "time_stop" => out(store.stop(actor, input(args)?)?),
-        "time_propose" => out(store.propose(actor, input(args)?)?),
+        "time_log" => out(store.log(by, input(args)?)?),
+        "time_edit" => out(store.edit(by, input(args)?)?),
+        "time_delete" => out(store.delete(by, input(args)?)?),
+        "time_start" => out(store.start(by, input(args)?)?),
+        "time_stop" => out(store.stop(by, input(args)?)?),
+        "time_propose" => out(store.propose(by, input(args)?)?),
         "time_proposals" => out(store.proposals(&input::<ListProposals>(args)?)?),
-        "time_withdraw" => out(store.withdraw(actor, input(args)?)?),
-        "proposal_accept" => out(store.accept(actor, input(args)?)?),
-        "proposal_reject" => out(store.reject(actor, input(args)?)?),
-        "time_confirm" => out(store.confirm(actor, input(args)?)?),
+        "time_withdraw" => out(store.withdraw(by, input(args)?)?),
+        "proposal_accept" => out(store.accept(by, input(args)?)?),
+        "proposal_reject" => out(store.reject(by, input(args)?)?),
+        "time_confirm" => out(store.confirm(by, input(args)?)?),
         "project_create" => out(store.create_project(actor, input(args)?)?),
         "project_update" => out(store.update_project(actor, input(args)?)?),
         _ => Err(OpError::Unknown(name.to_string())),

@@ -34,6 +34,8 @@ pub const SKEW_MS: i64 = 5_000;
 pub const MAX_WINDOW_MS: i64 = 60_000;
 /// The author recorded for an agent whose harness gives no usable name.
 pub const UNNAMED_AGENT: &str = "agent";
+/// The longest session id recorded; a longer one is not recorded at all.
+pub const MAX_SESSION: usize = 128;
 
 pub fn sha256_hex(bytes: &[u8]) -> String {
     hex::encode(Sha256::digest(bytes))
@@ -208,6 +210,19 @@ impl Caller {
             .filter(|h| crate::http::valid_agent_name(h))
             .unwrap_or(UNNAMED_AGENT);
         Actor::Agent(name.to_string())
+    }
+
+    /// The Tracon session the node says made the call, as hora records it
+    /// beside the author: up to [`MAX_SESSION`] visible ASCII characters, or
+    /// none.
+    pub fn session(&self) -> Option<String> {
+        self.session
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| {
+                !s.is_empty() && s.len() <= MAX_SESSION && s.bytes().all(|b| b.is_ascii_graphic())
+            })
+            .map(str::to_string)
     }
 }
 

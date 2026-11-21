@@ -45,6 +45,7 @@ use tokio::sync::watch;
 
 use crate::contract::{self, ContractEnv, NonceCache, UiRequest};
 use crate::http::{self, App};
+use crate::model::Writer;
 use crate::ops;
 use crate::store::Store;
 
@@ -190,14 +191,22 @@ async fn guard(State(auth): State<Arc<Auth>>, request: Request, next: Next) -> R
         now_ms(),
         &auth.nonces,
     );
-    if let Err(refusal) = checked {
-        eprintln!(
-            "hora: refused {} {path}: {} (check {})",
-            parts.method, refusal.reason, refusal.check
-        );
-        return http::error(StatusCode::UNAUTHORIZED, "unauthorized", &refusal.reason);
+    let caller = match checked {
+        Ok(caller) => caller,
+        Err(refusal) => {
+            eprintln!(
+                "hora: refused {} {path}: {} (check {})",
+                parts.method, refusal.reason, refusal.check
+            );
+            return http::error(StatusCode::UNAUTHORIZED, "unauthorized", &refusal.reason);
+        }
+    };
+    let mut request = Request::from_parts(parts, Body::from(bytes));
+    if let Some(session) = caller.session() {
+        request
+            .extensions_mut()
+            .insert(http::AttestedSession(session));
     }
-    let request = Request::from_parts(parts, Body::from(bytes));
     let mutation = !matches!(*request.method(), Method::GET | Method::HEAD);
     let mut response = if mutation && !http::json_content(&request) {
         http::error(
@@ -321,12 +330,19 @@ impl Mcp {
             }
         })?;
         let actor = caller.actor();
+        let session = caller.session();
         let args = arguments.cloned().unwrap_or_else(|| json!({}));
         let store = self.store.clone();
         let name = name.to_string();
-        let ran = tokio::task::spawn_blocking(move || ops::dispatch(&store, &actor, &name, args))
-            .await
-            .map_err(|_| RpcError::new(-32603, "the call failed"))?;
+        let ran = tokio::task::spawn_blocking(move || {
+            let by = Writer {
+                actor: &actor,
+                session: session.as_deref(),
+            };
+            ops::dispatch(&store, by, &name, args)
+        })
+        .await
+        .map_err(|_| RpcError::new(-32603, "the call failed"))?;
         Ok(match ran {
             Ok(value) => tool_ok(&value),
             Err(err) => tool_error(&http::op_error_body(err).1),

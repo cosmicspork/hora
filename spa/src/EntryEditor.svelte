@@ -158,7 +158,7 @@
       <h2>{entry ? (running ? 'Running timer' : 'Edit entry') : 'Add time'}</h2>
       {#if entry}
         <span class="badge {entry.state}">{entry.state}</span>
-        <span class="author">by {entry.author}</span>
+        <span class="author">by {entry.author}{#if entry.session} in session <code class="session" title="Tracon session">{entry.session}</code>{/if}</span>
       {/if}
     </header>
 
@@ -219,7 +219,7 @@
           <ol>
             {#each history as r (r.id)}
               <li>
-                <div><strong>{r.action}</strong> by {r.actor}{#if r.proposed_by}, proposed by {r.proposed_by}{/if} <span class="muted">via {r.via} · {new Date(r.at).toLocaleString()}</span></div>
+                <div><strong>{r.action}</strong> by {r.actor}{#if r.session} in session <code class="session" title="Tracon session">{r.session}</code>{/if}{#if r.proposed_by}, proposed by {r.proposed_by}{#if r.proposed_session} in session <code class="session" title="Tracon session">{r.proposed_session}</code>{/if}{/if} <span class="muted">via {r.via} · {new Date(r.at).toLocaleString()}</span></div>
                 {#if r.action !== 'create' && r.action !== 'start'}
                   <ul class="changes">
                     {#each Object.entries(r.changes) as [field, [before, after]] (field)}

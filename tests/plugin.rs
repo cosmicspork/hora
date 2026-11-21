@@ -363,6 +363,8 @@ async fn plugin_toml_moves_the_database_and_agent_listen_serves_the_cli() {
     let entry: Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(entry["author"], "agent:claude-code");
     assert_eq!(entry["state"], "draft");
+    // Nothing the node signed came with it, so no session is recorded.
+    assert!(entry.get("session").is_none(), "{entry}");
 
     // agent_listen serves the agent API only: not the operator's, not the page.
     let client = reqwest::Client::new();
@@ -467,4 +469,169 @@ async fn the_overview_and_export_tools_answer_as_their_routes_do() {
     let line: Value = serde_json::from_str(export["content"].as_str().unwrap().trim_end()).unwrap();
     assert_eq!(line["author"], "agent:claude");
     assert!(line.get("warnings").is_none());
+}
+
+#[tokio::test]
+async fn tool_writes_record_the_session_the_node_signed() {
+    let plugin = Plugin::start(|_| {}).await;
+    plugin.add_project("acme").await;
+
+    let draft = plugin
+        .call_ok_in("time_log", minutes(45), "claude", Some("s-log"))
+        .await;
+    assert_eq!(draft["author"], "agent:claude");
+    assert_eq!(draft["session"], "s-log");
+    let edited = plugin
+        .call_ok_in(
+            "time_edit",
+            json!({"id": draft["id"], "version": 1, "minutes": 40}),
+            "claude",
+            Some("s-edit"),
+        )
+        .await;
+    assert_eq!(edited["session"], "s-log", "the creating session stays");
+
+    // The operator confirms on the page, with no session in its context.
+    let (status, confirmed) = plugin
+        .op(
+            "time_confirm",
+            json!({"entries": [{"id": draft["id"], "version": 2}]}),
+        )
+        .await;
+    assert_eq!(status, 200, "{confirmed}");
+    let proposal = plugin
+        .call_ok_in(
+            "time_propose",
+            json!({"id": draft["id"], "version": 3, "minutes": 30, "reason": "Ends at 18:30"}),
+            "claude",
+            Some("s-propose"),
+        )
+        .await;
+    assert_eq!(proposal["session"], "s-propose");
+    let listed = plugin
+        .call_ok("time_proposals", json!({"entry": draft["id"]}), "claude")
+        .await;
+    assert_eq!(listed[0]["session"], "s-propose");
+
+    // A page request whose signed context names a session records it too.
+    let target = "/api/ops/proposal_accept";
+    let body = json!({"id": proposal["id"]}).to_string().into_bytes();
+    let mut context = ui_context("POST", target, &body);
+    context["caller"]["session"] = json!("s-page");
+    let answer = plugin
+        .raw(
+            "POST",
+            target,
+            &[
+                ("Content-Type", "application/json".into()),
+                ("tracon-context", header(&contract::sign(&context, &key()))),
+            ],
+            &body,
+        )
+        .await;
+    assert_eq!(answer.status, 200, "{}", answer.json());
+    assert_eq!(answer.json()["decided_session"], "s-page");
+
+    let shown = plugin
+        .call_ok("time_show", json!({"id": draft["id"]}), "claude")
+        .await;
+    assert_eq!(shown["session"], "s-log");
+    let history = plugin
+        .call_ok("time_history", json!({"id": draft["id"]}), "codex")
+        .await;
+    let sessions: Vec<&Value> = history
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| &r["session"])
+        .collect();
+    assert_eq!(
+        sessions,
+        [
+            &json!("s-log"),
+            &json!("s-edit"),
+            &Value::Null,
+            &json!("s-page")
+        ]
+    );
+    assert_eq!(history[3]["actor"], "operator");
+    assert_eq!(history[3]["proposed_by"], "agent:claude");
+    assert_eq!(history[3]["proposed_session"], "s-propose");
+
+    // Timers and deletions, and a call whose context names no session.
+    let started = plugin
+        .call_ok_in(
+            "time_start",
+            json!({"project": "acme", "description": "Timer",
+                   "started_at": (chrono::Local::now() - chrono::Duration::minutes(30)).to_rfc3339()}),
+            "claude",
+            Some("s-start"),
+        )
+        .await;
+    assert_eq!(started["session"], "s-start");
+    let stopped = plugin
+        .call_ok_in("time_stop", json!({}), "claude", None)
+        .await;
+    let deleted = plugin
+        .call_ok_in(
+            "time_delete",
+            json!({"id": stopped["id"], "version": stopped["version"]}),
+            "claude",
+            Some("s-delete"),
+        )
+        .await;
+    assert_eq!(deleted["deleted"], true);
+    let history = plugin
+        .call_ok("time_history", json!({"id": stopped["id"]}), "claude")
+        .await;
+    let sessions: Vec<&Value> = history
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| &r["session"])
+        .collect();
+    assert_eq!(
+        sessions,
+        [&json!("s-start"), &Value::Null, &json!("s-delete")]
+    );
+
+    // A withdrawal is recorded as the proposal's decision.
+    let other = plugin
+        .call_ok_in("time_log", minutes(15), "claude", None)
+        .await;
+    assert!(other.get("session").is_none(), "{other}");
+    let (status, _) = plugin
+        .op(
+            "time_confirm",
+            json!({"entries": [{"id": other["id"], "version": 1}]}),
+        )
+        .await;
+    assert_eq!(status, 200);
+    let proposal = plugin
+        .call_ok_in(
+            "time_propose",
+            json!({"id": other["id"], "version": 2, "delete": true, "reason": "Duplicate"}),
+            "claude",
+            Some("s-p2"),
+        )
+        .await;
+    let withdrawn = plugin
+        .call_ok_in(
+            "time_withdraw",
+            json!({"id": proposal["id"]}),
+            "claude",
+            Some("s-withdraw"),
+        )
+        .await;
+    assert_eq!(withdrawn["session"], "s-p2");
+    assert_eq!(withdrawn["decided_session"], "s-withdraw");
+
+    // A session id that isn't printable ASCII or is too long is not recorded.
+    let long = "x".repeat(contract::MAX_SESSION + 1);
+    for bad in ["has space", "", long.as_str()] {
+        let entry = plugin
+            .call_ok_in("time_log", minutes(5), "claude", Some(bad))
+            .await;
+        assert!(entry.get("session").is_none(), "{bad:?}: {entry}");
+    }
 }

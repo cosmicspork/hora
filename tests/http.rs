@@ -324,3 +324,32 @@ async fn read_routes_run_their_operations() {
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert_eq!(body["error"], "invalid_request");
 }
+
+#[tokio::test]
+async fn standalone_writes_record_no_session() {
+    let (_dir, router) = app();
+    let agent = post("/api/agent/ops/time_log")
+        .header("x-hora-agent", "claude-code")
+        .body(Body::from(log_body().to_string()))
+        .unwrap();
+    let (status, entry) = send(&router, agent).await;
+    assert_eq!(status, StatusCode::OK, "{entry}");
+    assert!(entry.get("session").is_none(), "{entry}");
+    // Standalone, a tracon-context header is not read at all.
+    let operator = post("/api/ops/time_log")
+        .header("origin", ORIGIN)
+        .header("tracon-context", "eyJjYWxsZXIiOnsic2Vzc2lvbiI6InMifX0")
+        .body(Body::from(log_body().to_string()))
+        .unwrap();
+    let (status, entry) = send(&router, operator).await;
+    assert_eq!(status, StatusCode::OK, "{entry}");
+    assert_eq!(entry["author"], "operator");
+    assert!(entry.get("session").is_none(), "{entry}");
+    let history = post("/api/ops/time_history")
+        .header("origin", ORIGIN)
+        .body(Body::from(json!({"id": entry["id"]}).to_string()))
+        .unwrap();
+    let (status, history) = send(&router, history).await;
+    assert_eq!(status, StatusCode::OK, "{history}");
+    assert!(history[0].get("session").is_none(), "{history}");
+}

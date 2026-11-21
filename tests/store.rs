@@ -2,7 +2,7 @@ use chrono::Duration;
 use hora::model::{
     Actor, ConfirmEntries, CreateProject, DecideProposal, DeleteEntry, EditEntry, EntryState,
     EntryVersion, Grouping, ListEntries, ListProposals, LogEntry, ProposalState, ProposeChange,
-    StartTimer, StopTimer, SummaryQuery, WithdrawProposal,
+    StartTimer, StopTimer, SummaryQuery, WithdrawProposal, Writer,
 };
 use hora::store::{Store, StoreError};
 use hora::time;
@@ -649,4 +649,295 @@ fn a_version_1_database_is_upgraded_in_place() {
         .accept(&Actor::Operator, decide(&proposal.id))
         .unwrap();
     assert_eq!(store.entry("e").unwrap().minutes, Some(45));
+}
+
+// ---- Tracon sessions --------------------------------------------------------
+
+fn in_session<'a>(actor: &'a Actor, session: &'a str) -> Writer<'a> {
+    Writer {
+        actor,
+        session: Some(session),
+    }
+}
+
+fn columns(dir: &std::path::Path, table: &str) -> Vec<String> {
+    let connection = rusqlite::Connection::open(dir.join("hora.sqlite3")).unwrap();
+    let mut statement = connection
+        .prepare("SELECT name FROM pragma_table_info(?1)")
+        .unwrap();
+    statement
+        .query_map([table], |r| r.get(0))
+        .unwrap()
+        .collect::<rusqlite::Result<Vec<String>>>()
+        .unwrap()
+}
+
+fn user_version(dir: &std::path::Path) -> i64 {
+    rusqlite::Connection::open(dir.join("hora.sqlite3"))
+        .unwrap()
+        .pragma_query_value(None, "user_version", |r| r.get(0))
+        .unwrap()
+}
+
+#[test]
+fn every_write_records_its_session_beside_the_author() {
+    let (_dir, store) = setup();
+    let agent = agent();
+    let draft = store.log(in_session(&agent, "s-log"), log(30)).unwrap();
+    assert_eq!(draft.author, "agent:claude-code");
+    assert_eq!(draft.session.as_deref(), Some("s-log"));
+    let edited = store
+        .edit(
+            in_session(&agent, "s-edit"),
+            EditEntry {
+                id: draft.id.clone(),
+                version: 1,
+                minutes: Some(25),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    // The entry keeps the session that created it; the edit is in history.
+    assert_eq!(edited.session.as_deref(), Some("s-log"));
+    store
+        .confirm(
+            &Actor::Operator,
+            ConfirmEntries {
+                entries: vec![EntryVersion {
+                    id: draft.id.clone(),
+                    version: 2,
+                }],
+            },
+        )
+        .unwrap();
+    let proposal = store
+        .propose(
+            in_session(&agent, "s-propose"),
+            propose_minutes(&draft.id, 3, 20),
+        )
+        .unwrap();
+    assert_eq!(proposal.author, "agent:claude-code");
+    assert_eq!(proposal.session.as_deref(), Some("s-propose"));
+    let accepted = store
+        .accept(
+            in_session(&Actor::Operator, "s-accept"),
+            decide(&proposal.id),
+        )
+        .unwrap();
+    assert_eq!(accepted.decided_session.as_deref(), Some("s-accept"));
+
+    let history = store.history(&draft.id).unwrap();
+    let sessions: Vec<_> = history.iter().map(|r| r.session.as_deref()).collect();
+    assert_eq!(
+        sessions,
+        [Some("s-log"), Some("s-edit"), None, Some("s-accept")]
+    );
+    let last = history.last().unwrap();
+    assert_eq!(last.actor, "operator");
+    assert_eq!(last.proposed_by.as_deref(), Some("agent:claude-code"));
+    assert_eq!(last.proposed_session.as_deref(), Some("s-propose"));
+    assert!(history[..3].iter().all(|r| r.proposed_session.is_none()));
+
+    // A timer, a deletion and a withdrawal record theirs too.
+    let started = store
+        .start(
+            in_session(&agent, "s-start"),
+            StartTimer {
+                project: "acme".into(),
+                description: "timer".into(),
+                started_at: Some(time::format(&(time::now() - Duration::minutes(30)))),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    assert_eq!(started.session.as_deref(), Some("s-start"));
+    let stopped = store
+        .stop(in_session(&agent, "s-stop"), StopTimer::default())
+        .unwrap();
+    store
+        .delete(
+            in_session(&agent, "s-delete"),
+            DeleteEntry {
+                id: stopped.id.clone(),
+                version: stopped.version,
+                reason: None,
+            },
+        )
+        .unwrap();
+    let sessions: Vec<_> = store
+        .history(&stopped.id)
+        .unwrap()
+        .into_iter()
+        .map(|r| (r.action, r.session))
+        .collect();
+    assert_eq!(
+        sessions,
+        [
+            ("start".to_string(), Some("s-start".to_string())),
+            ("stop".to_string(), Some("s-stop".to_string())),
+            ("delete".to_string(), Some("s-delete".to_string())),
+        ]
+    );
+
+    let other = store.log(&Actor::Operator, log(60)).unwrap();
+    let proposal = store
+        .propose(&agent, propose_minutes(&other.id, 1, 50))
+        .unwrap();
+    assert!(proposal.session.is_none());
+    let withdrawn = store
+        .withdraw(
+            in_session(&agent, "s-withdraw"),
+            WithdrawProposal {
+                id: proposal.id.clone(),
+            },
+        )
+        .unwrap();
+    assert_eq!(withdrawn.decided_session.as_deref(), Some("s-withdraw"));
+}
+
+#[test]
+fn writes_outside_the_plugin_record_no_session() {
+    let (_dir, store) = setup();
+    let draft = store.log(&agent(), log(30)).unwrap();
+    assert!(draft.session.is_none());
+    let operator = store.log(&Actor::Operator, log(30)).unwrap();
+    assert!(operator.session.is_none());
+    for entry in [&draft, &operator] {
+        let history = store.history(&entry.id).unwrap();
+        assert!(history[0].session.is_none());
+        // Absent from the JSON, as proposal_id is when unset.
+        let json = serde_json::to_value(&history[0]).unwrap();
+        assert!(json.get("session").is_none(), "{json}");
+    }
+    assert!(
+        serde_json::to_value(&draft)
+            .unwrap()
+            .get("session")
+            .is_none()
+    );
+}
+
+#[test]
+fn the_session_columns_are_added_once_and_user_version_stays() {
+    let dir = tempfile::tempdir().unwrap();
+    for _ in 0..3 {
+        drop(Store::open(dir.path()).unwrap());
+    }
+    assert_eq!(
+        user_version(dir.path()),
+        hora::store::MIGRATIONS.len() as i64
+    );
+    assert_eq!(user_version(dir.path()), 2);
+    for (table, column) in hora::store::ADDED_COLUMNS {
+        let found = columns(dir.path(), table)
+            .iter()
+            .filter(|c| c == column)
+            .count();
+        assert_eq!(found, 1, "{table}.{column}");
+    }
+}
+
+/// A database as hora 0.3.0 left it: schema 2, no session columns.
+fn hora_0_3_database(dir: &std::path::Path) {
+    let connection = rusqlite::Connection::open(dir.join("hora.sqlite3")).unwrap();
+    for sql in hora::store::MIGRATIONS {
+        connection.execute_batch(sql).unwrap();
+    }
+    connection
+        .execute_batch(
+            "PRAGMA user_version=2;
+             INSERT INTO project(id,slug,name,billable_default,created_at,updated_at) VALUES('p','acme','Acme',1,'2026-11-01T00:00:00Z','2026-11-01T00:00:00Z');
+             INSERT INTO entry(id,project_id,date,minutes,description,billable,state,author,created_at,updated_at) VALUES('e','p','2026-11-01',60,'Fixes',1,'confirmed','agent:claude','2026-11-01T00:00:00Z','2026-11-01T00:00:00Z');
+             INSERT INTO revision(entry_id,version,actor,via,action,changes_json,at) VALUES('e',1,'agent:claude','agent','create','{}','2026-11-01T00:00:00Z');
+             INSERT INTO proposal(id,entry_id,entry_version,action,input_json,changes_json,reason,author,state,created_at) VALUES('q','e',1,'update','{\"id\":\"e\",\"version\":1,\"minutes\":45}','{\"minutes\":[60,45]}','shorter','agent:claude','pending','2026-11-01T00:00:00Z');",
+        )
+        .unwrap();
+}
+
+#[test]
+fn a_hora_0_3_database_opens_and_its_rows_have_no_session() {
+    let dir = tempfile::tempdir().unwrap();
+    hora_0_3_database(dir.path());
+    assert!(!columns(dir.path(), "revision").contains(&"session".to_string()));
+    let store = Store::open(dir.path()).unwrap();
+    assert_eq!(user_version(dir.path()), 2);
+    assert!(columns(dir.path(), "revision").contains(&"session".to_string()));
+
+    let entry = store.entry("e").unwrap();
+    assert_eq!(entry.author, "agent:claude");
+    assert!(entry.session.is_none());
+    assert!(store.history("e").unwrap()[0].session.is_none());
+    let pending = store.proposals(&ListProposals::default()).unwrap();
+    assert!(pending[0].session.is_none());
+
+    // The old proposal is accepted in a session; only the new rows carry one.
+    store
+        .accept(in_session(&Actor::Operator, "s-ui"), decide("q"))
+        .unwrap();
+    let history = store.history("e").unwrap();
+    assert!(history[0].session.is_none());
+    assert_eq!(history[1].session.as_deref(), Some("s-ui"));
+    assert!(history[1].proposed_session.is_none());
+    assert_eq!(history[1].proposed_by.as_deref(), Some("agent:claude"));
+}
+
+/// Rollback: after this build opens a database, hora 0.3.0's own statements
+/// (copied from its store) still run against it, and its schema check still
+/// passes, so the older binary can be put back.
+#[test]
+fn hora_0_3_still_reads_and_writes_a_database_this_build_opened() {
+    let dir = tempfile::tempdir().unwrap();
+    hora_0_3_database(dir.path());
+    let store = Store::open(dir.path()).unwrap();
+    let agent = agent();
+    let mine = store.log(in_session(&agent, "s-new"), log(30)).unwrap();
+    drop(store);
+
+    let old = rusqlite::Connection::open(dir.path().join("hora.sqlite3")).unwrap();
+    // 0.3.0 refuses a database whose user_version is above its 2 migrations.
+    let version: i64 = old
+        .pragma_query_value(None, "user_version", |r| r.get(0))
+        .unwrap();
+    assert!(version <= 2);
+    old.execute(
+        "INSERT INTO entry(id,project_id,date,started_at,ended_at,start_ms,end_ms,minutes,description,billable,state,author,refs_json,import_key,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?15)",
+        rusqlite::params!["old", "p", "2026-11-02", None::<String>, None::<String>, None::<i64>, None::<i64>, 15, "From 0.3", true, "draft", "agent:old", "[]", None::<String>, "2026-11-02T00:00:00Z"],
+    )
+    .unwrap();
+    old.execute(
+        "INSERT INTO revision(entry_id,version,actor,via,action,changes_json,reason,at,proposal_id,proposed_by) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
+        rusqlite::params!["old", 1, "agent:old", "agent", "create", "{}", None::<String>, "2026-11-02T00:00:00Z", None::<String>, None::<String>],
+    )
+    .unwrap();
+    old.execute(
+        "UPDATE proposal SET state=?1,decided_by=?2,decided_at=?3,note=?4 WHERE id=?5 AND state='pending'",
+        rusqlite::params!["rejected", "operator", "2026-11-02T00:00:00Z", None::<String>, "q"],
+    )
+    .unwrap();
+    let rows: i64 = old
+        .query_row(
+            "SELECT count(*) FROM (SELECT e.id,e.project_id,p.slug,p.name,e.date,e.started_at,e.ended_at,e.minutes,e.description,e.billable,e.state,e.author,e.refs_json,e.import_key,e.deleted_at,e.version,e.created_at,e.updated_at FROM entry e JOIN project p ON p.id=e.project_id)",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(rows, 3);
+    old.query_row(
+        "SELECT id,entry_id,version,actor,via,action,changes_json,reason,at,proposal_id,proposed_by FROM revision WHERE entry_id=?1 ORDER BY id",
+        [&mine.id],
+        |_| Ok(()),
+    )
+    .unwrap();
+    drop(old);
+
+    // Back on this build, the old binary's rows simply have no session.
+    let store = Store::open(dir.path()).unwrap();
+    assert!(store.entry("old").unwrap().session.is_none());
+    assert!(store.history("old").unwrap()[0].session.is_none());
+    assert_eq!(
+        store.entry(&mine.id).unwrap().session.as_deref(),
+        Some("s-new")
+    );
+    let rejected = store.proposals(&ListProposals::default()).unwrap();
+    assert!(rejected[0].decided_session.is_none());
 }

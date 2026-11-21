@@ -6,7 +6,9 @@ use std::sync::Arc;
 use axum::{
     Json, Router,
     body::Bytes,
-    extract::{DefaultBodyLimit, Path, Query, Request, State, rejection::BytesRejection},
+    extract::{
+        DefaultBodyLimit, Extension, Path, Query, Request, State, rejection::BytesRejection,
+    },
     http::{HeaderMap, HeaderValue, Method, StatusCode, Uri, header},
     middleware::{self, Next},
     response::{IntoResponse, Response},
@@ -15,7 +17,7 @@ use axum::{
 use rust_embed::Embed;
 use serde_json::{Map, Value, json};
 
-use crate::model::Actor;
+use crate::model::{Actor, Writer};
 use crate::ops::{self, OpError};
 use crate::store::{Store, StoreError};
 
@@ -135,6 +137,13 @@ fn actor_for(path: &str, headers: &HeaderMap) -> Result<Actor, Response> {
     }
 }
 
+/// The Tracon session behind an operator request on the plugin socket, put
+/// there by `plugin::guard` from the node's signed context once it checks
+/// out. Nothing else sets it, so standalone and agent-API writes record no
+/// session.
+#[derive(Clone, Debug)]
+pub(crate) struct AttestedSession(pub String);
+
 pub fn valid_agent_name(name: &str) -> bool {
     !name.is_empty()
         && name.len() <= 64
@@ -158,6 +167,7 @@ async fn call(
     Path(name): Path<String>,
     uri: Uri,
     headers: HeaderMap,
+    session: Option<Extension<AttestedSession>>,
     bytes: Result<Bytes, BytesRejection>,
 ) -> Response {
     let actor = match actor_for(uri.path(), &headers) {
@@ -189,7 +199,15 @@ async fn call(
         }
     };
     let store = app.store.clone();
-    match blocking(move || ops::dispatch(&store, &actor, &name, args)).await {
+    let session = session.map(|Extension(AttestedSession(id))| id);
+    let job = move || {
+        let by = Writer {
+            actor: &actor,
+            session: session.as_deref(),
+        };
+        ops::dispatch(&store, by, &name, args)
+    };
+    match blocking(job).await {
         Ok(Ok(value)) => Json(value).into_response(),
         Ok(Err(err)) => op_error(err),
         Err(response) => response,
