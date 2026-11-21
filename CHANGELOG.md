@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.0](https://github.com/cosmicspork/hora/compare/v0.3.0...v0.4.0) (2026-11-21)
+
+
+### Features
+
+* record the Tracon session on revisions ([#8](https://github.com/cosmicspork/hora/issues/8)) ([a1bee66](https://github.com/cosmicspork/hora/commit/a1bee66e28da400a669576faea30c6e0ae95d5b7))
+
 ## [0.3.0](https://github.com/cosmicspork/hora/compare/v0.2.0...v0.3.0) (2026-11-21)
 
 
