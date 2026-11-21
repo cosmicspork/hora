@@ -13,10 +13,9 @@ use axum::{
     routing::{get, post},
 };
 use rust_embed::Embed;
-use serde::Deserialize;
-use serde_json::{Value, json};
+use serde_json::{Map, Value, json};
 
-use crate::model::{Actor, Entry, ListEntries};
+use crate::model::Actor;
 use crate::ops::{self, OpError};
 use crate::store::{Store, StoreError};
 
@@ -96,11 +95,6 @@ fn store_error_body(err: StoreError) -> (StatusCode, Value) {
 
 fn op_error(err: OpError) -> Response {
     let (status, body) = op_error_body(err);
-    (status, Json(body)).into_response()
-}
-
-fn store_error(err: StoreError) -> Response {
-    let (status, body) = store_error_body(err);
     (status, Json(body)).into_response()
 }
 
@@ -202,109 +196,128 @@ async fn call(
     }
 }
 
-async fn state(State(app): State<App>) -> Response {
-    let store = app.store.clone();
-    match blocking(move || store.state()).await {
-        Ok(Ok(state)) => Json(state).into_response(),
-        Ok(Err(err)) => store_error(err),
-        Err(response) => response,
-    }
-}
-
-#[derive(Deserialize)]
-struct ExportQuery {
-    format: Option<String>,
-    from: Option<String>,
-    to: Option<String>,
-    project: Option<String>,
-}
-
-async fn export(State(app): State<App>, Query(query): Query<ExportQuery>) -> Response {
-    let format = query.format.unwrap_or_else(|| "csv".into());
-    if format != "csv" && format != "jsonl" {
+/// A read-only operation over `GET`, its arguments from the query string, as
+/// the caller `actor_for` decides. `download` serves its result, an
+/// `Export`, as the file it describes.
+async fn get_op(
+    app: App,
+    name: &'static str,
+    download: bool,
+    uri: Uri,
+    headers: HeaderMap,
+    query: Map<String, Value>,
+) -> Response {
+    // GET skips the Origin check mutations get, so a writing operation
+    // never answers one.
+    if ops::find(name).is_none_or(|op| op.writes) {
         return error(
-            StatusCode::BAD_REQUEST,
+            StatusCode::METHOD_NOT_ALLOWED,
             "invalid_request",
-            "format is csv or jsonl",
+            "Only read operations answer GET.",
         );
     }
-    let filter = ListEntries {
-        from: query.from.clone(),
-        to: query.to.clone(),
-        project: query.project.clone(),
-        state: None,
-    };
-    let store = app.store.clone();
-    let entries = match blocking(move || store.entries(&filter)).await {
-        Ok(Ok(entries)) => entries,
-        Ok(Err(err)) => return store_error(err),
+    let actor = match actor_for(uri.path(), &headers) {
+        Ok(actor) => actor,
         Err(response) => return response,
     };
-    let entries: Vec<Entry> = entries.into_iter().filter(|e| !e.running).collect();
-    let (body, content_type) = if format == "csv" {
-        (to_csv(&entries), "text/csv; charset=utf-8")
-    } else {
-        let mut body = String::new();
-        for entry in &entries {
-            let mut value = serde_json::to_value(entry).unwrap_or(Value::Null);
-            if let Value::Object(map) = &mut value {
-                map.remove("warnings");
-            }
-            body.push_str(&value.to_string());
-            body.push('\n');
-        }
-        (body, "application/x-ndjson; charset=utf-8")
-    };
-    let name = format!(
-        "hora-{}-{}.{}",
-        entries.first().map(|e| e.date.as_str()).unwrap_or("empty"),
-        entries.last().map(|e| e.date.as_str()).unwrap_or("empty"),
-        format
-    );
+    let store = app.store.clone();
+    let value =
+        match blocking(move || ops::dispatch(&store, &actor, name, Value::Object(query))).await {
+            Ok(Ok(value)) => value,
+            Ok(Err(err)) => return op_error(err),
+            Err(response) => return response,
+        };
+    if !download {
+        return Json(value).into_response();
+    }
+    let field = |key: &str| value[key].as_str().unwrap_or_default().to_string();
     (
         [
-            (header::CONTENT_TYPE, content_type.to_string()),
+            (header::CONTENT_TYPE, field("content_type")),
             (
                 header::CONTENT_DISPOSITION,
-                format!("attachment; filename=\"{name}\""),
+                format!("attachment; filename=\"{}\"", field("filename")),
             ),
         ],
-        body,
+        field("content"),
     )
         .into_response()
 }
 
-pub fn to_csv(entries: &[Entry]) -> String {
-    fn cell(value: &str) -> String {
-        if value.contains([',', '"', '\n', '\r']) {
-            format!("\"{}\"", value.replace('"', "\"\""))
-        } else {
-            value.to_string()
-        }
-    }
-    let mut out = String::from(
-        "id,date,project,started_at,ended_at,minutes,hours,billable,state,author,description,refs\n",
-    );
-    for e in entries {
-        let minutes = e.minutes.unwrap_or(0);
-        let row = [
-            e.id.clone(),
-            e.date.clone(),
-            e.project.clone(),
-            e.started_at.clone().unwrap_or_default(),
-            e.ended_at.clone().unwrap_or_default(),
-            minutes.to_string(),
-            format!("{:.2}", minutes as f64 / 60.0),
-            e.billable.to_string(),
-            e.state.as_str().to_string(),
-            e.author.clone(),
-            e.description.clone(),
-            e.refs.join(" "),
-        ];
-        out.push_str(&row.iter().map(|v| cell(v)).collect::<Vec<_>>().join(","));
-        out.push('\n');
-    }
-    out
+/// What a route of the HTTP API serves.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Serves {
+    /// `POST`: the operation the path's `{name}` names, its arguments the
+    /// JSON body. Every operation in `ops::OPS`.
+    AnyOp,
+    /// `GET`: the operation registry, each operation with its schema.
+    Registry,
+    /// `GET`: one read-only operation, its arguments the query string.
+    Op(&'static str),
+    /// `GET`: one read-only operation whose result is a file, downloaded.
+    Download(&'static str),
+}
+
+pub struct Route {
+    pub path: &'static str,
+    pub serves: Serves,
+}
+
+/// Every route of the HTTP API, and the operation behind it. The routers are
+/// built from this table alone, so a route is either an operation (and so,
+/// unless it is operator-only, an MCP tool) or listed here as what it is.
+/// `tests/parity.rs` holds the table, the tools and the page to that.
+/// Routes under `/api/agent` are the agent API; the rest are the operator's.
+pub const ROUTES: &[Route] = &[
+    Route {
+        path: "/api/state",
+        serves: Serves::Op("time_overview"),
+    },
+    Route {
+        path: "/api/ops",
+        serves: Serves::Registry,
+    },
+    Route {
+        path: "/api/ops/{name}",
+        serves: Serves::AnyOp,
+    },
+    Route {
+        path: "/api/export",
+        serves: Serves::Download("time_export"),
+    },
+    Route {
+        path: "/api/agent/ops",
+        serves: Serves::Registry,
+    },
+    Route {
+        path: "/api/agent/ops/{name}",
+        serves: Serves::AnyOp,
+    },
+];
+
+/// The routes of `ROUTES` on the agent API (`agent`) or the operator's.
+fn api(agent: bool) -> Router<App> {
+    ROUTES
+        .iter()
+        .filter(|route| is_agent_path(route.path) == agent)
+        .fold(Router::new(), |router, route| {
+            let method = match route.serves {
+                Serves::AnyOp => post(call),
+                Serves::Registry => get(list_ops),
+                Serves::Op(name) | Serves::Download(name) => {
+                    let download = matches!(route.serves, Serves::Download(_));
+                    get(
+                        move |State(app): State<App>,
+                              uri: Uri,
+                              headers: HeaderMap,
+                              Query(query): Query<Map<String, Value>>| {
+                            get_op(app, name, download, uri, headers, query)
+                        },
+                    )
+                }
+            };
+            router.route(route.path, method)
+        })
 }
 
 async fn asset(uri: Uri) -> Response {
@@ -416,18 +429,12 @@ async fn guard(State(app): State<App>, request: Request, next: Next) -> Response
 /// request is the operator's (the page's own origin standalone, the node's
 /// signed context as a plugin).
 pub fn operator_api() -> Router<App> {
-    Router::new()
-        .route("/api/state", get(state))
-        .route("/api/ops", get(list_ops))
-        .route("/api/ops/{name}", post(call))
-        .route("/api/export", get(export))
+    api(false)
 }
 
 /// The agent API, for the hora CLI: the agent names itself in a header.
 fn agent_api() -> Router<App> {
-    Router::new()
-        .route("/api/agent/ops", get(list_ops))
-        .route("/api/agent/ops/{name}", post(call))
+    api(true)
 }
 
 /// A JSON 404 for any path a router does not serve.

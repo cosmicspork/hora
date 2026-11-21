@@ -7,11 +7,16 @@
 # operator confirms it in hora's page, and its change to a confirmed entry is
 # a proposal the operator accepts or rejects there, so none of the writes is
 # consequential. Operator-only operations (confirming, deciding proposals,
-# projects) are not tools.
+# projects) are not tools. tests/package.rs holds this list to tools/list, and
+# tests/parity.rs holds the tools to the HTTP API.
 name = "hora"
 version = "0.2.0"
 contract = 1
 exec = ["bin/hora", "serve"]
+
+[[tool]]
+name = "time_overview"
+hint = "read"
 
 [[tool]]
 name = "time_projects"
@@ -35,6 +40,10 @@ hint = "read"
 
 [[tool]]
 name = "time_summary"
+hint = "read"
+
+[[tool]]
+name = "time_export"
 hint = "read"
 
 [[tool]]

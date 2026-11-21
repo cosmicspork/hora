@@ -1,7 +1,8 @@
 //! The operation registry: every action hora offers, named and described once,
 //! with its JSON input schema. The agent API and the CLI are thin layers over
-//! it, the web UI calls it as the operator, and as a Tracon plugin the ones an
-//! agent may run are its MCP tools (`plugin::tools`).
+//! it, the web UI calls it as the operator (every HTTP route is one of these,
+//! see `http::ROUTES`), and as a Tracon plugin the ones an agent may run are
+//! its MCP tools (`plugin::tools`). `tests/parity.rs` holds the three together.
 
 use schemars::{JsonSchema, Schema, schema_for};
 use serde::Serialize;
@@ -9,9 +10,9 @@ use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 
 use crate::model::{
-    Actor, ConfirmEntries, CreateProject, DecideProposal, DeleteEntry, EditEntry, Empty,
-    ListEntries, ListProposals, LogEntry, ProposeChange, ShowEntry, StartTimer, StopTimer,
-    SummaryQuery, UpdateProject, WithdrawProposal,
+    Actor, ConfirmEntries, CreateProject, DecideProposal, DeleteEntry, EditEntry, Empty, Entry,
+    Export, ExportFormat, ExportQuery, ListEntries, ListProposals, LogEntry, ProposeChange,
+    ShowEntry, StartTimer, StopTimer, SummaryQuery, UpdateProject, WithdrawProposal,
 };
 use crate::store::{Store, StoreError};
 
@@ -61,6 +62,13 @@ macro_rules! op {
 
 pub const OPS: &[Op] = &[
     op!(
+        "time_overview",
+        Empty,
+        false,
+        false,
+        "Today's local date and UTC offset, the projects, the running timer, and how many drafts and pending proposals wait on the operator."
+    ),
+    op!(
         "time_projects",
         Empty,
         false,
@@ -101,6 +109,13 @@ pub const OPS: &[Op] = &[
         false,
         false,
         "Minutes by day, week or month and project, split into confirmed billable, confirmed non-billable, and drafts."
+    ),
+    op!(
+        "time_export",
+        ExportQuery,
+        false,
+        false,
+        "Export entries by local date range and project as CSV or JSONL, without a running timer. Returns the file name, media type and text."
     ),
     op!(
         "time_log",
@@ -251,7 +266,12 @@ pub fn dispatch(store: &Store, actor: &Actor, name: &str, args: Value) -> Result
             input::<Empty>(args)?;
             out(json!({ "running": store.running()? }))
         }
+        "time_overview" => {
+            input::<Empty>(args)?;
+            out(store.state()?)
+        }
         "time_summary" => out(store.summary(&input::<SummaryQuery>(args)?)?),
+        "time_export" => out(export(store, input(args)?)?),
         "time_log" => out(store.log(actor, input(args)?)?),
         "time_edit" => out(store.edit(actor, input(args)?)?),
         "time_delete" => out(store.delete(actor, input(args)?)?),
@@ -267,4 +287,84 @@ pub fn dispatch(store: &Store, actor: &Actor, name: &str, args: Value) -> Result
         "project_update" => out(store.update_project(actor, input(args)?)?),
         _ => Err(OpError::Unknown(name.to_string())),
     }
+}
+
+fn export(store: &Store, query: ExportQuery) -> Result<Export, OpError> {
+    let filter = ListEntries {
+        from: query.from,
+        to: query.to,
+        project: query.project,
+        state: None,
+    };
+    let entries: Vec<Entry> = store
+        .entries(&filter)?
+        .into_iter()
+        .filter(|e| !e.running)
+        .collect();
+    let (content, content_type, extension) = match query.format {
+        ExportFormat::Csv => (to_csv(&entries), "text/csv; charset=utf-8", "csv"),
+        ExportFormat::Jsonl => (
+            to_jsonl(&entries),
+            "application/x-ndjson; charset=utf-8",
+            "jsonl",
+        ),
+    };
+    let filename = format!(
+        "hora-{}-{}.{extension}",
+        entries.first().map(|e| e.date.as_str()).unwrap_or("empty"),
+        entries.last().map(|e| e.date.as_str()).unwrap_or("empty"),
+    );
+    Ok(Export {
+        format: query.format,
+        filename,
+        content_type: content_type.to_string(),
+        entries: entries.len(),
+        content,
+    })
+}
+
+fn to_jsonl(entries: &[Entry]) -> String {
+    let mut body = String::new();
+    for entry in entries {
+        let mut value = serde_json::to_value(entry).unwrap_or(Value::Null);
+        if let Value::Object(map) = &mut value {
+            map.remove("warnings");
+        }
+        body.push_str(&value.to_string());
+        body.push('\n');
+    }
+    body
+}
+
+pub fn to_csv(entries: &[Entry]) -> String {
+    fn cell(value: &str) -> String {
+        if value.contains([',', '"', '\n', '\r']) {
+            format!("\"{}\"", value.replace('"', "\"\""))
+        } else {
+            value.to_string()
+        }
+    }
+    let mut out = String::from(
+        "id,date,project,started_at,ended_at,minutes,hours,billable,state,author,description,refs\n",
+    );
+    for e in entries {
+        let minutes = e.minutes.unwrap_or(0);
+        let row = [
+            e.id.clone(),
+            e.date.clone(),
+            e.project.clone(),
+            e.started_at.clone().unwrap_or_default(),
+            e.ended_at.clone().unwrap_or_default(),
+            minutes.to_string(),
+            format!("{:.2}", minutes as f64 / 60.0),
+            e.billable.to_string(),
+            e.state.as_str().to_string(),
+            e.author.clone(),
+            e.description.clone(),
+            e.refs.join(" "),
+        ];
+        out.push_str(&row.iter().map(|v| cell(v)).collect::<Vec<_>>().join(","));
+        out.push('\n');
+    }
+    out
 }

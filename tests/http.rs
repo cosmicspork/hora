@@ -268,3 +268,59 @@ async fn proposals_go_through_the_operator() {
     .await;
     assert_eq!(state["proposals"], 0);
 }
+
+fn get(path: &str) -> Request<Body> {
+    Request::get(path)
+        .header("host", "127.0.0.1:4530")
+        .body(Body::empty())
+        .unwrap()
+}
+
+#[tokio::test]
+async fn read_routes_run_their_operations() {
+    let (_dir, router) = app();
+    call(
+        &router,
+        Some("claude-code"),
+        "time_log",
+        json!({"project": "acme", "date": "2026-11-03", "minutes": 30, "description": "a, b"}),
+    )
+    .await;
+
+    // GET /api/state is time_overview.
+    let (status, state) = send(&router, get("/api/state")).await;
+    assert_eq!(status, StatusCode::OK);
+    let (_, overview) = call(&router, None, "time_overview", json!({})).await;
+    assert_eq!(state, overview);
+    assert_eq!(state["drafts"], 1);
+
+    // GET /api/export is time_export, downloaded.
+    let response = router
+        .clone()
+        .oneshot(get("/api/export?from=2026-11-01&to=2026-11-30"))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.headers()["content-disposition"],
+        "attachment; filename=\"hora-2026-11-03-2026-11-03.csv\""
+    );
+    assert_eq!(
+        response.headers()["content-type"],
+        "text/csv; charset=utf-8"
+    );
+    let csv = to_bytes(response.into_body(), 1 << 20).await.unwrap();
+    let (_, export) = call(
+        &router,
+        None,
+        "time_export",
+        json!({"from": "2026-11-01", "to": "2026-11-30"}),
+    )
+    .await;
+    assert_eq!(std::str::from_utf8(&csv).unwrap(), export["content"]);
+    assert!(export["content"].as_str().unwrap().contains("\"a, b\""));
+
+    let (status, body) = send(&router, get("/api/export?format=xml")).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["error"], "invalid_request");
+}

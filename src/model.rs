@@ -224,6 +224,16 @@ pub struct State {
     pub proposals: i64,
 }
 
+/// An export: the file's name, media type and text.
+#[derive(Serialize, Clone, Debug)]
+pub struct Export {
+    pub format: ExportFormat,
+    pub filename: String,
+    pub content_type: String,
+    pub entries: usize,
+    pub content: String,
+}
+
 // ---- Operation inputs -------------------------------------------------------
 
 /// Record time against a project. Agents create drafts; the operator confirms.
@@ -477,6 +487,32 @@ pub struct SummaryQuery {
     pub project: Option<String>,
     #[serde(default)]
     pub by: Grouping,
+}
+
+#[derive(Serialize, Deserialize, JsonSchema, Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum ExportFormat {
+    #[default]
+    Csv,
+    Jsonl,
+}
+
+/// Export entries by local date, oldest first, as CSV or JSONL. A running
+/// timer is left out. Defaults to the last seven days.
+#[derive(Deserialize, JsonSchema, Debug, Clone, Default)]
+#[serde(deny_unknown_fields)]
+pub struct ExportQuery {
+    #[serde(default)]
+    pub format: ExportFormat,
+    /// First date, inclusive, `YYYY-MM-DD`.
+    #[serde(default)]
+    pub from: Option<String>,
+    /// Last date, inclusive, `YYYY-MM-DD`.
+    #[serde(default)]
+    pub to: Option<String>,
+    /// Project slug.
+    #[serde(default)]
+    pub project: Option<String>,
 }
 
 /// Add a project. Operator only.
