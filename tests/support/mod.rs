@@ -81,6 +81,16 @@ pub fn ui_context(method: &str, target: &str, body: &[u8]) -> Value {
 
 /// The unsigned context the node would send for a tool call by `harness`.
 pub fn call_context(tool: &str, arguments: &Value, harness: &str) -> Value {
+    call_context_in(tool, arguments, harness, Some("session-1"))
+}
+
+/// The same, from the Tracon session `session` (or none).
+pub fn call_context_in(
+    tool: &str,
+    arguments: &Value,
+    harness: &str,
+    session: Option<&str>,
+) -> Value {
     let now = now_ms();
     json!({
         "v": 1,
@@ -88,7 +98,7 @@ pub fn call_context(tool: &str, arguments: &Value, harness: &str) -> Value {
         "instance": contract::instance_of(TOKEN),
         "tool": tool,
         "arguments_sha256": contract::arguments_sha256(Some(arguments)),
-        "caller": {"kind": "agent", "session": "session-1", "harness": harness},
+        "caller": {"kind": "agent", "session": session, "harness": harness},
         "channel": "personal",
         "approval_id": null,
         "issued_ms": now,
@@ -248,7 +258,19 @@ impl Plugin {
     /// `tools/call` with the node's signed context for `harness`; the result
     /// or the JSON-RPC error.
     pub async fn call(&self, tool: &str, arguments: Value, harness: &str) -> Value {
-        let context = contract::sign(&call_context(tool, &arguments, harness), &key());
+        self.call_in(tool, arguments, harness, Some("session-1"))
+            .await
+    }
+
+    /// `tools/call` from the Tracon session `session` (or none).
+    pub async fn call_in(
+        &self,
+        tool: &str,
+        arguments: Value,
+        harness: &str,
+        session: Option<&str>,
+    ) -> Value {
+        let context = contract::sign(&call_context_in(tool, &arguments, harness, session), &key());
         let (status, answer) = self
             .mcp(
                 &json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {
@@ -262,7 +284,19 @@ impl Plugin {
 
     /// The JSON a successful tool call answered.
     pub async fn call_ok(&self, tool: &str, arguments: Value, harness: &str) -> Value {
-        let answer = self.call(tool, arguments, harness).await;
+        self.call_ok_in(tool, arguments, harness, Some("session-1"))
+            .await
+    }
+
+    /// The JSON a successful tool call from `session` answered.
+    pub async fn call_ok_in(
+        &self,
+        tool: &str,
+        arguments: Value,
+        harness: &str,
+        session: Option<&str>,
+    ) -> Value {
+        let answer = self.call_in(tool, arguments, harness, session).await;
         let result = &answer["result"];
         assert_eq!(result["isError"], false, "{answer}");
         serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap()

@@ -16,6 +16,8 @@ export interface Entry {
   billable: boolean;
   state: EntryState;
   author: string;
+  /** The Tracon session that created it, when it came through the plugin with one. */
+  session?: string;
   refs: string[];
   import_key: string | null;
   deleted: boolean;
@@ -56,6 +58,10 @@ export interface Revision {
   at: string;
   proposal_id?: string;
   proposed_by?: string;
+  /** The Tracon session that made the change; absent outside the plugin. */
+  session?: string;
+  /** For an accepted proposal, the Tracon session that proposed it. */
+  proposed_session?: string;
 }
 
 export type ProposalState = 'pending' | 'accepted' | 'rejected' | 'withdrawn';
@@ -68,9 +74,13 @@ export interface Proposal {
   changes: Record<string, [unknown, unknown]>;
   reason: string;
   author: string;
+  /** The Tracon session that proposed it. */
+  session?: string;
   state: ProposalState;
   note: string | null;
   decided_by: string | null;
+  /** The Tracon session that decided or withdrew it. */
+  decided_session?: string;
   created_at: string;
   decided_at: string | null;
   /** The entry changed since; it can only be rejected. */

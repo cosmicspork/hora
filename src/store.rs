@@ -15,7 +15,7 @@ use crate::model::{
     Actor, ConfirmEntries, CreateProject, DecideProposal, DeleteEntry, EditEntry, Entry,
     EntryState, Grouping, ListEntries, ListProposals, LogEntry, Project, Proposal, ProposalState,
     ProposeChange, Revision, StartTimer, State, StopTimer, Summary, SummaryQuery, SummaryRow,
-    Totals, UpdateProject, Warning, WithdrawProposal,
+    Totals, UpdateProject, Warning, WithdrawProposal, Writer,
 };
 use crate::time;
 
@@ -150,6 +150,20 @@ ALTER TABLE revision ADD COLUMN proposal_id TEXT REFERENCES proposal(id);
 ALTER TABLE revision ADD COLUMN proposed_by TEXT;
 "];
 
+/// Nullable columns added outside [`MIGRATIONS`], so `user_version` does not
+/// move: an older hora refuses a database whose `user_version` is ahead of
+/// it, and these columns change nothing it reads or writes (every statement
+/// names its columns), so it can still open the database and leaves them
+/// null. Added on open when missing, never rewriting a row; a migration that
+/// needs one must add it itself, since these are applied after the others.
+pub const ADDED_COLUMNS: &[(&str, &str)] = &[
+    // The Tracon session behind the change, from the node's signed context.
+    ("entry", "session"),
+    ("revision", "session"),
+    ("proposal", "session"),
+    ("proposal", "decided_session"),
+];
+
 pub struct Store {
     connection: Mutex<Connection>,
 }
@@ -208,6 +222,7 @@ struct Row {
     project_name: String,
     state: EntryState,
     author: String,
+    session: Option<String>,
     import_key: Option<String>,
     deleted: bool,
     version: i64,
@@ -215,7 +230,7 @@ struct Row {
     updated_at: String,
 }
 
-const ROW_SELECT: &str = "SELECT e.id,e.project_id,p.slug,p.name,e.date,e.started_at,e.ended_at,e.minutes,e.description,e.billable,e.state,e.author,e.refs_json,e.import_key,e.deleted_at,e.version,e.created_at,e.updated_at FROM entry e JOIN project p ON p.id=e.project_id";
+const ROW_SELECT: &str = "SELECT e.id,e.project_id,p.slug,p.name,e.date,e.started_at,e.ended_at,e.minutes,e.description,e.billable,e.state,e.author,e.refs_json,e.import_key,e.deleted_at,e.version,e.created_at,e.updated_at,e.session FROM entry e JOIN project p ON p.id=e.project_id";
 
 fn row_from(row: &rusqlite::Row<'_>) -> rusqlite::Result<Row> {
     let instant = |idx: usize| -> rusqlite::Result<Option<DateTime<FixedOffset>>> {
@@ -256,6 +271,7 @@ fn row_from(row: &rusqlite::Row<'_>) -> rusqlite::Result<Row> {
         project_name: row.get(3)?,
         state: EntryState::parse(&state).unwrap_or(EntryState::Draft),
         author: row.get(11)?,
+        session: row.get(18)?,
         import_key: row.get(13)?,
         deleted: row.get::<_, Option<String>>(14)?.is_some(),
         version: row.get(15)?,
@@ -280,6 +296,7 @@ impl Row {
             billable: c.billable,
             state: self.state,
             author: self.author,
+            session: self.session,
             refs: c.refs,
             import_key: self.import_key,
             deleted: self.deleted,
@@ -483,7 +500,7 @@ impl Store {
         let connection = self.lock()?;
         load_row(&connection, id)?.ok_or(StoreError::NotFound)?;
         let mut statement = connection
-            .prepare("SELECT id,entry_id,version,actor,via,action,changes_json,reason,at,proposal_id,proposed_by FROM revision WHERE entry_id=?1 ORDER BY id")
+            .prepare("SELECT r.id,r.entry_id,r.version,r.actor,r.via,r.action,r.changes_json,r.reason,r.at,r.proposal_id,r.proposed_by,r.session,p.session FROM revision r LEFT JOIN proposal p ON p.id=r.proposal_id WHERE r.entry_id=?1 ORDER BY r.id")
             .map_err(internal)?;
         statement
             .query_map([id], |r| {
@@ -500,6 +517,8 @@ impl Store {
                     at: r.get(8)?,
                     proposal_id: r.get(9)?,
                     proposed_by: r.get(10)?,
+                    session: r.get(11)?,
+                    proposed_session: r.get(12)?,
                 })
             })
             .map_err(internal)?
@@ -565,7 +584,9 @@ impl Store {
 
     // ---- Writes -----------------------------------------------------------
 
-    pub fn log(&self, actor: &Actor, input: LogEntry) -> Result<Entry, StoreError> {
+    pub fn log<'a>(&self, by: impl Into<Writer<'a>>, input: LogEntry) -> Result<Entry, StoreError> {
+        let by = by.into();
+        let actor = by.actor;
         let mut connection = self.lock()?;
         let tx = connection.transaction().map_err(internal)?;
         let (project_id, project_slug, billable_default) = active_project(&tx, &input.project)?;
@@ -621,12 +642,12 @@ impl Store {
         }
         let reason = optional_text("reason", input.reason.as_deref(), MAX_TEXT)?;
         let state = initial_state(actor);
-        let id = insert(&tx, actor, &content, state, import_key.as_deref())?;
+        let id = insert(&tx, by, &content, state, import_key.as_deref())?;
         revise(
             &tx,
             &id,
             1,
-            actor,
+            by,
             "create",
             &Value::Null,
             &content.snapshot(state, false),
@@ -639,7 +660,13 @@ impl Store {
         Ok(entry)
     }
 
-    pub fn edit(&self, actor: &Actor, input: EditEntry) -> Result<Entry, StoreError> {
+    pub fn edit<'a>(
+        &self,
+        by: impl Into<Writer<'a>>,
+        input: EditEntry,
+    ) -> Result<Entry, StoreError> {
+        let by = by.into();
+        let actor = by.actor;
         let mut connection = self.lock()?;
         let tx = connection.transaction().map_err(internal)?;
         let row = load_live(&tx, &input.id, input.version)?;
@@ -650,7 +677,7 @@ impl Store {
         }
         let next = apply_edit(&tx, &row, &input)?;
         let reason = optional_text("reason", input.reason.as_deref(), MAX_TEXT)?;
-        let changed = write_edit(&tx, actor, &row, &next, reason.as_deref(), None)?;
+        let changed = write_edit(&tx, by, &row, &next, reason.as_deref(), None)?;
         if !changed {
             let entry = with_warnings(&tx, row)?;
             return Ok(entry);
@@ -660,7 +687,13 @@ impl Store {
         Ok(entry)
     }
 
-    pub fn delete(&self, actor: &Actor, input: DeleteEntry) -> Result<Entry, StoreError> {
+    pub fn delete<'a>(
+        &self,
+        by: impl Into<Writer<'a>>,
+        input: DeleteEntry,
+    ) -> Result<Entry, StoreError> {
+        let by = by.into();
+        let actor = by.actor;
         let mut connection = self.lock()?;
         let tx = connection.transaction().map_err(internal)?;
         let row = load_live(&tx, &input.id, input.version)?;
@@ -680,7 +713,7 @@ impl Store {
             &tx,
             &input.id,
             version,
-            actor,
+            by,
             "delete",
             &json!({"deleted": false}),
             &json!({"deleted": true}),
@@ -694,7 +727,13 @@ impl Store {
         Ok(entry)
     }
 
-    pub fn confirm(&self, actor: &Actor, input: ConfirmEntries) -> Result<Vec<Entry>, StoreError> {
+    pub fn confirm<'a>(
+        &self,
+        by: impl Into<Writer<'a>>,
+        input: ConfirmEntries,
+    ) -> Result<Vec<Entry>, StoreError> {
+        let by = by.into();
+        let actor = by.actor;
         operator_only(actor, "Only the operator confirms entries.")?;
         if input.entries.is_empty() {
             return Err(invalid("nothing to confirm"));
@@ -720,7 +759,7 @@ impl Store {
                     &tx,
                     &item.id,
                     row.version + 1,
-                    actor,
+                    by,
                     "confirm",
                     &json!({"state": "draft"}),
                     &json!({"state": "confirmed"}),
@@ -738,7 +777,13 @@ impl Store {
         Ok(entries)
     }
 
-    pub fn start(&self, actor: &Actor, input: StartTimer) -> Result<Entry, StoreError> {
+    pub fn start<'a>(
+        &self,
+        by: impl Into<Writer<'a>>,
+        input: StartTimer,
+    ) -> Result<Entry, StoreError> {
+        let by = by.into();
+        let actor = by.actor;
         let mut connection = self.lock()?;
         let tx = connection.transaction().map_err(internal)?;
         if let Some(row) = running_row(&tx)? {
@@ -762,12 +807,12 @@ impl Store {
         };
         validate(&content)?;
         let state = initial_state(actor);
-        let id = insert(&tx, actor, &content, state, None)?;
+        let id = insert(&tx, by, &content, state, None)?;
         revise(
             &tx,
             &id,
             1,
-            actor,
+            by,
             "start",
             &Value::Null,
             &content.snapshot(state, false),
@@ -779,7 +824,13 @@ impl Store {
         Ok(entry)
     }
 
-    pub fn stop(&self, actor: &Actor, input: StopTimer) -> Result<Entry, StoreError> {
+    pub fn stop<'a>(
+        &self,
+        by: impl Into<Writer<'a>>,
+        input: StopTimer,
+    ) -> Result<Entry, StoreError> {
+        let by = by.into();
+        let actor = by.actor;
         let mut connection = self.lock()?;
         let tx = connection.transaction().map_err(internal)?;
         let row = running_row(&tx)?.ok_or_else(|| invalid("No timer is running."))?;
@@ -817,7 +868,7 @@ impl Store {
             &tx,
             &row.id,
             version,
-            actor,
+            by,
             "stop",
             &before.snapshot(row.state, false),
             &next.snapshot(row.state, false),
@@ -833,7 +884,13 @@ impl Store {
 
     /// An agent proposes a change to a confirmed entry. Checked now against the
     /// same rules as an operator edit; applied only when the operator accepts.
-    pub fn propose(&self, actor: &Actor, input: ProposeChange) -> Result<Proposal, StoreError> {
+    pub fn propose<'a>(
+        &self,
+        by: impl Into<Writer<'a>>,
+        input: ProposeChange,
+    ) -> Result<Proposal, StoreError> {
+        let by = by.into();
+        let actor = by.actor;
         let Actor::Agent(_) = actor else {
             return Err(StoreError::Forbidden(
                 "The operator edits entries directly; proposals are for agents.".into(),
@@ -879,7 +936,7 @@ impl Store {
         };
         let id = Uuid::now_v7().to_string();
         tx.execute(
-            "INSERT INTO proposal(id,entry_id,entry_version,action,input_json,changes_json,reason,author,state,created_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,'pending',?9)",
+            "INSERT INTO proposal(id,entry_id,entry_version,action,input_json,changes_json,reason,author,session,state,created_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,'pending',?10)",
             params![
                 id,
                 row.id,
@@ -889,6 +946,7 @@ impl Store {
                 changes.to_string(),
                 reason,
                 author,
+                by.session,
                 time::utc_now()
             ],
         )
@@ -919,7 +977,13 @@ impl Store {
     }
 
     /// The proposing agent takes back its pending proposal.
-    pub fn withdraw(&self, actor: &Actor, input: WithdrawProposal) -> Result<Proposal, StoreError> {
+    pub fn withdraw<'a>(
+        &self,
+        by: impl Into<Writer<'a>>,
+        input: WithdrawProposal,
+    ) -> Result<Proposal, StoreError> {
+        let by = by.into();
+        let actor = by.actor;
         let mut connection = self.lock()?;
         let tx = connection.transaction().map_err(internal)?;
         let proposal = load_proposal(&tx, &input.id)?;
@@ -930,13 +994,19 @@ impl Store {
             ));
         }
         pending(&proposal)?;
-        decide(&tx, &proposal.id, ProposalState::Withdrawn, actor, None)?;
+        decide(&tx, &proposal.id, ProposalState::Withdrawn, by, None)?;
         let proposal = load_proposal(&tx, &input.id)?;
         tx.commit().map_err(internal)?;
         Ok(proposal)
     }
 
-    pub fn reject(&self, actor: &Actor, input: DecideProposal) -> Result<Proposal, StoreError> {
+    pub fn reject<'a>(
+        &self,
+        by: impl Into<Writer<'a>>,
+        input: DecideProposal,
+    ) -> Result<Proposal, StoreError> {
+        let by = by.into();
+        let actor = by.actor;
         operator_only(actor, "Only the operator rejects proposals.")?;
         let note = optional_text("note", input.note.as_deref(), MAX_TEXT)?;
         let mut connection = self.lock()?;
@@ -947,7 +1017,7 @@ impl Store {
             &tx,
             &proposal.id,
             ProposalState::Rejected,
-            actor,
+            by,
             note.as_deref(),
         )?;
         let proposal = load_proposal(&tx, &input.id)?;
@@ -957,7 +1027,13 @@ impl Store {
 
     /// Applies a pending proposal as an operator edit, keeping the entry's
     /// state. Refused when the entry changed since the proposal was made.
-    pub fn accept(&self, actor: &Actor, input: DecideProposal) -> Result<Proposal, StoreError> {
+    pub fn accept<'a>(
+        &self,
+        by: impl Into<Writer<'a>>,
+        input: DecideProposal,
+    ) -> Result<Proposal, StoreError> {
+        let by = by.into();
+        let actor = by.actor;
         operator_only(actor, "Only the operator accepts proposals.")?;
         let note = optional_text("note", input.note.as_deref(), MAX_TEXT)?;
         let mut connection = self.lock()?;
@@ -985,7 +1061,7 @@ impl Store {
                 &tx,
                 &row.id,
                 row.version + 1,
-                actor,
+                by,
                 "delete",
                 &json!({"deleted": false}),
                 &json!({"deleted": true}),
@@ -1002,13 +1078,13 @@ impl Store {
                 .map_err(internal)?;
             let edit: EditEntry = serde_json::from_str(&raw).map_err(internal)?;
             let next = apply_edit(&tx, &row, &edit)?;
-            write_edit(&tx, actor, &row, &next, reason, Some(&accepted))?;
+            write_edit(&tx, by, &row, &next, reason, Some(&accepted))?;
         }
         decide(
             &tx,
             &proposal.id,
             ProposalState::Accepted,
-            actor,
+            by,
             note.as_deref(),
         )?;
         let proposal = load_proposal(&tx, &input.id)?;
@@ -1083,7 +1159,7 @@ fn apply_edit(tx: &Transaction<'_>, row: &Row, input: &EditEntry) -> Result<Cont
 /// Writes an edit and its revision. False when nothing would change.
 fn write_edit(
     tx: &Transaction<'_>,
-    actor: &Actor,
+    by: Writer<'_>,
     row: &Row,
     next: &Content,
     reason: Option<&str>,
@@ -1096,7 +1172,7 @@ fn write_edit(
     }
     let version = write_content(tx, &row.id, next)?;
     revise(
-        tx, &row.id, version, actor, "update", &before, &after, reason, proposal,
+        tx, &row.id, version, by, "update", &before, &after, reason, proposal,
     )?;
     Ok(true)
 }
@@ -1128,12 +1204,12 @@ fn decide(
     tx: &Transaction<'_>,
     id: &str,
     state: ProposalState,
-    actor: &Actor,
+    by: Writer<'_>,
     note: Option<&str>,
 ) -> Result<(), StoreError> {
     tx.execute(
-        "UPDATE proposal SET state=?1,decided_by=?2,decided_at=?3,note=?4 WHERE id=?5 AND state='pending'",
-        params![state.as_str(), actor.label(), time::utc_now(), note, id],
+        "UPDATE proposal SET state=?1,decided_by=?2,decided_session=?3,decided_at=?4,note=?5 WHERE id=?6 AND state='pending'",
+        params![state.as_str(), by.actor.label(), by.session, time::utc_now(), note, id],
     )
     .map_err(internal)?;
     Ok(())
@@ -1153,10 +1229,12 @@ fn load_proposal(connection: &Connection, id: &str) -> Result<Proposal, StoreErr
         Option<String>,
         String,
         Option<String>,
+        Option<String>,
+        Option<String>,
     );
     let fields: Option<Fields> = connection
         .query_row(
-            "SELECT id,entry_id,entry_version,action,changes_json,reason,author,state,note,decided_by,created_at,decided_at FROM proposal WHERE id=?1",
+            "SELECT id,entry_id,entry_version,action,changes_json,reason,author,state,note,decided_by,created_at,decided_at,session,decided_session FROM proposal WHERE id=?1",
             [id],
             |r| {
                 Ok((
@@ -1172,6 +1250,8 @@ fn load_proposal(connection: &Connection, id: &str) -> Result<Proposal, StoreErr
                     r.get(9)?,
                     r.get(10)?,
                     r.get(11)?,
+                    r.get(12)?,
+                    r.get(13)?,
                 ))
             },
         )
@@ -1190,6 +1270,8 @@ fn load_proposal(connection: &Connection, id: &str) -> Result<Proposal, StoreErr
         decided_by,
         created_at,
         decided_at,
+        session,
+        decided_session,
     ) = fields.ok_or(StoreError::NotFound)?;
     let state = ProposalState::parse(&state).unwrap_or(ProposalState::Pending);
     let row = load_row(connection, &entry_id)?.ok_or(StoreError::NotFound)?;
@@ -1202,9 +1284,11 @@ fn load_proposal(connection: &Connection, id: &str) -> Result<Proposal, StoreErr
         changes: serde_json::from_str(&changes).unwrap_or(Value::Null),
         reason,
         author,
+        session,
         state,
         note,
         decided_by,
+        decided_session,
         created_at,
         decided_at,
         stale,
@@ -1230,7 +1314,7 @@ fn operator_only(actor: &Actor, message: &str) -> Result<(), StoreError> {
 
 fn insert(
     tx: &Transaction<'_>,
-    actor: &Actor,
+    by: Writer<'_>,
     content: &Content,
     state: EntryState,
     import_key: Option<&str>,
@@ -1238,7 +1322,7 @@ fn insert(
     let id = Uuid::now_v7().to_string();
     let now = time::utc_now();
     tx.execute(
-        "INSERT INTO entry(id,project_id,date,started_at,ended_at,start_ms,end_ms,minutes,description,billable,state,author,refs_json,import_key,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?15)",
+        "INSERT INTO entry(id,project_id,date,started_at,ended_at,start_ms,end_ms,minutes,description,billable,state,author,refs_json,import_key,created_at,updated_at,session) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?15,?16)",
         params![
             id,
             content.project_id,
@@ -1251,10 +1335,11 @@ fn insert(
             content.description,
             content.billable,
             state.as_str(),
-            actor.label(),
+            by.actor.label(),
             serde_json::to_string(&content.refs).map_err(internal)?,
             import_key,
             now,
+            by.session,
         ],
     )
     .map_err(|err| match err {
@@ -1315,7 +1400,7 @@ fn revise(
     tx: &Transaction<'_>,
     id: &str,
     version: i64,
-    actor: &Actor,
+    by: Writer<'_>,
     action: &str,
     before: &Value,
     after: &Value,
@@ -1323,18 +1408,19 @@ fn revise(
     proposal: Option<&Accepted<'_>>,
 ) -> Result<(), StoreError> {
     tx.execute(
-        "INSERT INTO revision(entry_id,version,actor,via,action,changes_json,reason,at,proposal_id,proposed_by) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
+        "INSERT INTO revision(entry_id,version,actor,via,action,changes_json,reason,at,proposal_id,proposed_by,session) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
         params![
             id,
             version,
-            actor.label(),
-            actor.via(),
+            by.actor.label(),
+            by.actor.via(),
             action,
             diff(before, after).to_string(),
             reason,
             time::utc_now(),
             proposal.map(|p| p.id),
             proposal.map(|p| p.author),
+            by.session,
         ],
     )
     .map_err(internal)?;
@@ -1655,6 +1741,20 @@ fn migrate(connection: &mut Connection) -> anyhow::Result<()> {
         tx.pragma_update(None, "user_version", (index + 1) as i64)?;
         tx.commit()?;
     }
+    // Immediate, so a second process opening the database at the same time
+    // waits and then finds the columns already there.
+    let tx = connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    for (table, column) in ADDED_COLUMNS {
+        let exists: bool = tx.query_row(
+            "SELECT count(*) FROM pragma_table_info(?1) WHERE name=?2",
+            [table, column],
+            |r| r.get::<_, i64>(0).map(|n| n > 0),
+        )?;
+        if !exists {
+            tx.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {column} TEXT;"))?;
+        }
+    }
+    tx.commit()?;
     Ok(())
 }
 
