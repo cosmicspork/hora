@@ -17,5 +17,8 @@
     "svelte-check": "^4.2.2",
     "typescript": "~6.0.2",
     "vite": "8.2.2"
+  },
+  "dependencies": {
+    "@tracon/ui": "https://github.com/cosmicspork/tracon/releases/download/v0.61.0/tracon-ui-0.61.0.tgz"
   }
 }

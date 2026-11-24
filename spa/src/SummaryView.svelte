@@ -2,6 +2,13 @@
   import { untrack } from 'svelte';
   import { api, ApiError, exportUrl, type Grouping, type Project, type Summary } from './lib/api';
   import { hours, monthEnd, monthStart } from './lib/time';
+  import { Banner, Segmented } from '@tracon/ui/svelte';
+
+  const groupings: { value: Grouping; label: string }[] = [
+    { value: 'day', label: 'Day' },
+    { value: 'week', label: 'Week' },
+    { value: 'month', label: 'Month' }
+  ];
 
   let { today, projects, version }: { today: string; projects: Project[]; version: number } = $props();
 
@@ -27,13 +34,7 @@
   <h2>Summary</h2>
   <label>From <input type="date" bind:value={from} /></label>
   <label>To <input type="date" bind:value={to} /></label>
-  <label>By
-    <select bind:value={by}>
-      <option value="day">Day</option>
-      <option value="week">Week</option>
-      <option value="month">Month</option>
-    </select>
-  </label>
+  <Segmented options={groupings} value={by} label="Group by" onchange={(g) => (by = g)} />
   <label>Project
     <select bind:value={project}>
       <option value="">All</option>
@@ -41,10 +42,10 @@
     </select>
   </label>
   <span class="spacer"></span>
-  <a class="button ghost" href={exportUrl('csv', from, to, project || undefined)} download>CSV</a>
-  <a class="button ghost" href={exportUrl('jsonl', from, to, project || undefined)} download>JSONL</a>
+  <a class="lnk" href={exportUrl('csv', from, to, project || undefined)} download>CSV</a>
+  <a class="lnk" href={exportUrl('jsonl', from, to, project || undefined)} download>JSONL</a>
 </div>
-{#if error}<p class="error" role="alert">{error}</p>{/if}
+{#if error}<Banner tone="crit" role="alert">{error}</Banner>{/if}
 
 {#if summary}
   <table class="summary">
@@ -76,6 +77,6 @@
     </tfoot>
   </table>
   {#if summary.total.draft_minutes}
-    <p class="muted">Draft hours aren't counted as billable or other until confirmed.</p>
+    <p class="note">Draft hours aren't counted as billable or other until confirmed.</p>
   {/if}
 {/if}

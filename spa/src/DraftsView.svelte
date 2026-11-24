@@ -4,6 +4,7 @@
   import { dayLabel, formatMinutes } from './lib/time';
   import EntryRow from './EntryRow.svelte';
   import ProposalCard from './ProposalCard.svelte';
+  import { Banner, Empty } from '@tracon/ui/svelte';
 
   let { today, projects, version, onopen, onchange }: {
     today: string;
@@ -62,32 +63,32 @@
 
 <div class="toolbar">
   <h2>Drafts</h2>
-  <span class="muted">Entries agents proposed. Check them against their refs, edit what's off, then confirm.</span>
+  <span class="note">Entries agents proposed. Check them against their refs, edit what's off, then confirm.</span>
   <span class="spacer"></span>
   {#if confirmable.length}
     <label class="check">
       <input type="checkbox" checked={selected.size > 0 && selected.size === confirmable.length} onchange={(e) => toggleAll(e.currentTarget.checked)} />
       All
     </label>
-    <button class="primary" disabled={!selected.size || busy} onclick={confirmSelected}>
+    <button class="btn p" disabled={!selected.size || busy} onclick={confirmSelected}>
       Confirm {selected.size || ''}{selected.size ? ` (${formatMinutes(selectedMinutes)})` : ''}
     </button>
   {/if}
 </div>
-{#if error}<p class="error" role="alert">{error}</p>{/if}
+{#if error}<Banner tone="crit" role="alert">{error}</Banner>{/if}
 {#if proposals.length}
   <section class="proposals">
-    <h3>Proposed changes <span class="muted">to confirmed entries. Accepting applies the change as your edit.</span></h3>
+    <h3>Proposed changes <span class="note">to confirmed entries. Accepting applies the change as your edit.</span></h3>
     {#each proposals as proposal (proposal.id)}
       <ProposalCard {proposal} {onopen} {onchange} />
     {/each}
   </section>
 {/if}
-{#if loaded && !drafts.length}<p class="empty">No drafts waiting.</p>{/if}
+{#if loaded && !drafts.length}<Empty>No drafts waiting.</Empty>{/if}
 
 {#each dates as day (day)}
   <section class="day">
-    <header><h3>{dayLabel(day)} <span class="muted">{day.slice(0, 4)}</span></h3></header>
+    <header><h3>{dayLabel(day)}</h3><span class="total">{day.slice(0, 4)}</span></header>
     <ul class="entries">
       {#each drafts.filter((d) => d.date === day) as entry (entry.id)}
         <EntryRow
@@ -104,7 +105,6 @@
 {/each}
 
 <style>
-  .proposals { display: flex; flex-direction: column; gap: 0.6rem; margin-bottom: 1rem; }
-  .proposals h3 { margin: 0; font-size: 1rem; }
-  .proposals h3 .muted { font-weight: normal; font-size: 0.9em; }
+  .proposals { display: flex; flex-direction: column; gap: 8px; margin-bottom: 8px; }
+  .proposals h3 .note { font-weight: 400; }
 </style>

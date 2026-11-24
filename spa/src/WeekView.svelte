@@ -3,6 +3,7 @@
   import { api, ApiError, type Entry, type Project } from './lib/api';
   import { addDays, dayLabel, elapsedMinutes, formatMinutes, weekDays, weekStart } from './lib/time';
   import EntryRow from './EntryRow.svelte';
+  import { Banner } from '@tracon/ui/svelte';
 
   let { today, projects, version, onadd, onopen }: {
     today: string;
@@ -41,9 +42,9 @@
 </script>
 
 <div class="toolbar">
-  <button class="ghost" onclick={() => (start = addDays(start, -7))} aria-label="Previous week">←</button>
-  <button class="ghost" onclick={() => (start = weekStart(today))} disabled={start === weekStart(today)}>This week</button>
-  <button class="ghost" onclick={() => (start = addDays(start, 7))} aria-label="Next week">→</button>
+  <button class="lnk" onclick={() => (start = addDays(start, -7))} aria-label="Previous week">←</button>
+  <button class="lnk" onclick={() => (start = weekStart(today))} disabled={start === weekStart(today)}>This week</button>
+  <button class="lnk" onclick={() => (start = addDays(start, 7))} aria-label="Next week">→</button>
   <h2>{dayLabel(days[0])} to {dayLabel(days[6])}</h2>
   <span class="spacer"></span>
   <span class="totals">
@@ -52,16 +53,17 @@
     {#if totals.draft}<span class="draft-text" title="Unconfirmed">{formatMinutes(totals.draft)} draft</span>{/if}
   </span>
 </div>
-{#if error}<p class="error" role="alert">{error}</p>{/if}
+{#if error}<Banner tone="crit" role="alert">{error}</Banner>{/if}
 
 {#each days as day (day)}
   {@const list = entries.filter((e) => e.date === day)}
   <section class="day" class:today={day === today}>
     <header>
       <h3>{dayLabel(day)}</h3>
-      {#if list.length}<span class="muted">{formatMinutes(minutesOf(list).all)}</span>{/if}
+      {#if day === today}<span class="tag">today</span>{/if}
+      {#if list.length}<span class="total">{formatMinutes(minutesOf(list).all)}</span>{/if}
       <span class="spacer"></span>
-      {#if day <= today}<button class="ghost small" onclick={() => onadd(day)}>+ Add</button>{/if}
+      {#if day <= today}<button class="lnk" onclick={() => onadd(day)} aria-label="Add time on {dayLabel(day)}">+ Add</button>{/if}
     </header>
     {#if list.length}
       <ul class="entries">
