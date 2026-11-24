@@ -88,7 +88,7 @@ hora keeps a cooperative agent accountable: its work arrives as drafts or propos
 
 ## As a Tracon plugin
 
-hora also runs as a Tracon plugin with a UI. Once a release exists:
+hora also runs as a Tracon plugin with a UI:
 
 ```sh
 tracon plugin add cosmicspork/hora
