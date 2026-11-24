@@ -1,5 +1,6 @@
 <script lang="ts">
   import { api, ApiError, type Project } from './lib/api';
+  import { Banner } from '@tracon/ui/svelte';
 
   let { projects, onchange }: { projects: Project[]; onchange: () => void } = $props();
 
@@ -37,7 +38,7 @@
 </script>
 
 <div class="toolbar"><h2>Projects</h2></div>
-{#if error}<p class="error" role="alert">{error}</p>{/if}
+{#if error}<Banner tone="crit" role="alert">{error}</Banner>{/if}
 
 <table class="projects">
   <thead><tr><th>Name</th><th>Slug</th><th>Client</th><th>Billable by default</th><th></th></tr></thead>
@@ -58,7 +59,7 @@
             onchange={(e) => run(() => api.updateProject({ slug: p.slug, version: p.version, billable_default: e.currentTarget.checked }))} />
         </td>
         <td>
-          <button class="ghost small" onclick={() => run(() => api.updateProject({ slug: p.slug, version: p.version, archived: !p.archived }))}>
+          <button class="lnk" onclick={() => run(() => api.updateProject({ slug: p.slug, version: p.version, archived: !p.archived }))}>
             {p.archived ? 'Restore' : 'Archive'}
           </button>
         </td>
@@ -73,6 +74,6 @@
   <label>Slug <input bind:value={slug} placeholder={slugify(name) || 'acme'} pattern="[a-z0-9]+(-[a-z0-9]+)*" /></label>
   <label>Client <input bind:value={client} /></label>
   <label class="check"><input type="checkbox" bind:checked={billable} /> Billable by default</label>
-  <button class="primary">Add</button>
-  <p class="muted">The slug is how agents and exports name the project, and it never changes.</p>
+  <button class="btn p">Add</button>
+  <p class="note">The slug is how agents and exports name the project, and it never changes.</p>
 </form>

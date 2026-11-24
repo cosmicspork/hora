@@ -6,9 +6,16 @@
   import SummaryView from './SummaryView.svelte';
   import ProjectsView from './ProjectsView.svelte';
   import EntryEditor from './EntryEditor.svelte';
+  import { Banner, Empty, Segmented } from '@tracon/ui/svelte';
 
   type View = 'week' | 'drafts' | 'summary' | 'projects';
   const views: View[] = ['week', 'drafts', 'summary', 'projects'];
+  const options: { value: View; label: string }[] = [
+    { value: 'week', label: 'Week' },
+    { value: 'drafts', label: 'Drafts' },
+    { value: 'summary', label: 'Summary' },
+    { value: 'projects', label: 'Projects' }
+  ];
 
   function fromHash(): View {
     const name = location.hash.slice(1) as View;
@@ -21,6 +28,7 @@
   // Bumped after every change so views reload what they show.
   let version = $state(0);
   let editing = $state<{ entry: Entry | null; date: string } | null>(null);
+  const waiting = $derived(app ? app.drafts + app.proposals : 0);
 
   async function refresh() {
     try {
@@ -58,22 +66,20 @@
   });
 </script>
 
-<header class="top">
-  <a class="brand" href="#week"><img src="./hora.svg" alt="" width="22" height="22" /> hora</a>
-  <nav>
-    <a href="#week" class:active={view === 'week'}>Week</a>
-    <a href="#drafts" class:active={view === 'drafts'}>Drafts{#if app && app.drafts + app.proposals}<span class="count" title="{app.drafts} drafts, {app.proposals} proposed changes">{app.drafts + app.proposals}</span>{/if}</a>
-    <a href="#summary" class:active={view === 'summary'}>Summary</a>
-    <a href="#projects" class:active={view === 'projects'}>Projects</a>
-  </nav>
-</header>
-
 <main>
-  {#if error}<p class="error" role="alert">{error}</p>{/if}
+  {#if error}<Banner tone="crit" role="alert">{error}</Banner>{/if}
   {#if app}
     <TimerBar running={app.running} projects={app.projects} onchange={changed} onopen={(entry) => (editing = { entry, date: entry.date })} />
+  {/if}
+  <nav class="views">
+    <Segmented {options} value={view} label="View" onchange={(v) => (location.hash = v)} />
+    {#if waiting}
+      <a class="waiting" href="#drafts" title="{app?.drafts} drafts, {app?.proposals} proposed changes">{waiting} waiting on you</a>
+    {/if}
+  </nav>
+  {#if app}
     {#if !app.projects.length && view !== 'projects'}
-      <p class="empty">No projects yet. <a href="#projects">Add one</a> to start.</p>
+      <Empty>No projects yet. <a class="lnk" href="#projects">Add one</a> to start.</Empty>
     {:else if view === 'week'}
       <WeekView today={app.today} projects={app.projects} {version}
         onadd={(date) => (editing = { entry: null, date })}
@@ -86,6 +92,8 @@
     {:else}
       <ProjectsView projects={app.projects} onchange={changed} />
     {/if}
+  {:else if !error}
+    <Empty loading>Loading…</Empty>
   {/if}
 </main>
 

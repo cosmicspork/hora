@@ -3,6 +3,7 @@
   import { api, ApiError, type EditInput, type Entry, type Project, type Revision } from './lib/api';
   import { clock, formatMinutes, localStamp, offsetOf, parseDuration, spanMinutes } from './lib/time';
   import { show } from './lib/format';
+  import { Banner } from '@tracon/ui/svelte';
 
   let {
     entry = null,
@@ -185,28 +186,28 @@
       </label>
 
       {#if entry?.pending_proposals}
-        <p class="warn">An agent proposed a change to this entry. <a href="#drafts" onclick={onclose}>Review it in Drafts</a>; saving here makes it stale.</p>
+        <Banner>An agent proposed a change to this entry. <a class="lnk" href="#drafts" onclick={onclose}>Review it in Drafts</a>; saving here makes it stale.</Banner>
       {/if}
       {#if entry?.warnings?.length}
-        <ul class="warnings">
+        <div class="banner dim"><ul class="warnings">
           {#each entry.warnings as w, i (i)}<li>{w.message}</li>{/each}
-        </ul>
+        </ul></div>
       {/if}
-      {#if error}<p class="error" role="alert">{error}</p>{/if}
+      {#if error}<Banner tone="crit" role="alert">{error}</Banner>{/if}
 
       <div class="actions">
         {#if entry && !confirmDelete}
-          <button type="button" class="danger ghost" onclick={() => (confirmDelete = true)} disabled={busy}>Delete</button>
+          <button type="button" class="lnk d" onclick={() => (confirmDelete = true)} disabled={busy}>Delete</button>
         {:else if entry}
-          <button type="button" class="danger" onclick={remove} disabled={busy}>Really delete</button>
-          <button type="button" class="ghost" onclick={() => (confirmDelete = false)}>Keep</button>
+          <button type="button" class="btn d" onclick={remove} disabled={busy}>Really delete</button>
+          <button type="button" class="lnk" onclick={() => (confirmDelete = false)}>Keep</button>
         {/if}
         <span class="spacer"></span>
-        <button type="button" class="ghost" onclick={onclose}>Cancel</button>
+        <button type="button" class="lnk" onclick={onclose}>Cancel</button>
         {#if entry?.state === 'draft' && !running}
-          <button type="button" onclick={() => save(true)} disabled={busy}>Save and confirm</button>
+          <button type="button" class="btn" onclick={() => save(true)} disabled={busy}>Save and confirm</button>
         {/if}
-        <button type="submit" class="primary" disabled={busy}>Save</button>
+        <button type="submit" class="btn p" disabled={busy}>Save</button>
       </div>
     </form>
 
@@ -214,12 +215,12 @@
       <section class="history">
         <h3>History</h3>
         {#if history === null}
-          <p class="muted">Loading…</p>
+          <p class="note">Loading…</p>
         {:else}
           <ol>
             {#each history as r (r.id)}
               <li>
-                <div><strong>{r.action}</strong> by {r.actor}{#if r.session} in session <code class="session" title="Tracon session">{r.session}</code>{/if}{#if r.proposed_by}, proposed by {r.proposed_by}{#if r.proposed_session} in session <code class="session" title="Tracon session">{r.proposed_session}</code>{/if}{/if} <span class="muted">via {r.via} · {new Date(r.at).toLocaleString()}</span></div>
+                <div><strong>{r.action}</strong> by {r.actor}{#if r.session} in session <code class="session" title="Tracon session">{r.session}</code>{/if}{#if r.proposed_by}, proposed by {r.proposed_by}{#if r.proposed_session} in session <code class="session" title="Tracon session">{r.proposed_session}</code>{/if}{/if} <span class="note">via {r.via} · {new Date(r.at).toLocaleString()}</span></div>
                 {#if r.action !== 'create' && r.action !== 'start'}
                   <ul class="changes">
                     {#each Object.entries(r.changes) as [field, [before, after]] (field)}
